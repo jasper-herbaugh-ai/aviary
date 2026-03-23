@@ -1,14 +1,15 @@
 services:
   postgres:
     image: postgres:18
+    env_file:
+      - stack.env
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: aviary
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-aviary}
     volumes:
       - postgres_data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d aviary"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-aviary}"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -17,14 +18,12 @@ services:
 
   api:
     image: ghcr.io/robertherbaugh/merlin:latest
-    container_name: hm-aviary-dev01-api
+    container_name: ${COMPOSE_PROJECT_NAME:-aviary}-api
     env_file:
       - stack.env
-    environment:
-      API_PORT: 4000
     expose:
-      - "4000"
-      - "50051"
+      - "${API_PORT:-4000}"
+      - "${API_GRPC_PORT:-50051}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -33,19 +32,17 @@ services:
       - traefik
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.aviary-api.rule=Host(`${AVIARY_DOMAIN}`) && PathPrefix(`/api`, `/swagger`)"
+      - "traefik.docker.network=${TRAEFIK_NETWORK:-traefik}"
+      - "traefik.http.routers.aviary-api.rule=Host(`${AVIARY_DOMAIN}`) && (PathPrefix(`/api`) || PathPrefix(`/swagger`))"
       - "traefik.http.routers.aviary-api.entrypoints=websecure"
       - "traefik.http.routers.aviary-api.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
-      - "traefik.http.services.aviary-api.loadbalancer.server.port=4000"
-      - "traefik.docker.network=traefik"
+      - "traefik.http.services.aviary-api.loadbalancer.server.port=${API_PORT:-4000}"
 
   web:
     image: ghcr.io/robertherbaugh/perch:latest
-    container_name: hm-aviary-dev01-frontend
+    container_name: ${COMPOSE_PROJECT_NAME:-aviary}-web
     env_file:
       - stack.env
-    environment:
-      NEXT_PUBLIC_API_BASE_URL: https://${AVIARY_DOMAIN}
     expose:
       - "3000"
     depends_on:
@@ -55,21 +52,19 @@ services:
       - traefik
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=${TRAEFIK_NETWORK:-traefik}"
       - "traefik.http.routers.aviary-web.rule=Host(`${AVIARY_DOMAIN}`)"
       - "traefik.http.routers.aviary-web.entrypoints=websecure"
       - "traefik.http.routers.aviary-web.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.aviary-web.loadbalancer.server.port=3000"
-      - "traefik.docker.network=traefik"
       # Lower priority so api routes match first
       - "traefik.http.routers.aviary-web.priority=1"
 
   worker:
     image: ghcr.io/robertherbaugh/swift:latest
-    container_name: hm-aviary-dev01-worker01
+    container_name: ${COMPOSE_PROJECT_NAME:-aviary}-worker
     env_file:
       - stack.env
-    environment:
-      WORKER_API_BASE_URL: http://api:4000
     depends_on:
       - api
     networks:

@@ -1,7 +1,20 @@
 import { getAuthToken } from "./auth";
 
 export function apiBase() {
-  return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
+  if (process.env.NEXT_PUBLIC_API_BASE_URL) {
+    return process.env.NEXT_PUBLIC_API_BASE_URL;
+  }
+  // When no env var is baked in, derive the API URL from the browser location.
+  // On standard ports (reverse proxy like Traefik), the API is on the same
+  // origin. On non-standard ports (plain Docker Compose), use port 4000.
+  if (typeof window !== "undefined") {
+    const { protocol, hostname, port } = window.location;
+    if (!port || port === "80" || port === "443") {
+      return `${protocol}//${hostname}`;
+    }
+    return `${protocol}//${hostname}:4000`;
+  }
+  return "http://localhost:4000";
 }
 
 type ApiRequestOptions = Omit<RequestInit, "body"> & {
