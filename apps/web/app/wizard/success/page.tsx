@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
+import { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { Shell } from "../../../components/shell";
 
-export default function WizardSuccessPage() {
+function WizardSuccessContent() {
   const searchParams = useSearchParams();
   const credentialId = searchParams.get("credentialId") ?? "n/a";
   const serverId = searchParams.get("serverId") ?? "n/a";
@@ -13,15 +14,7 @@ export default function WizardSuccessPage() {
   const cronExpression = searchParams.get("cronExpression") ?? "n/a";
 
   return (
-    <Shell
-      title="Wizard Complete"
-      subtitle="Automation resources were configured successfully."
-      actions={
-        <Link className="btn btn-secondary" href="/wizard">
-          New Wizard Run
-        </Link>
-      }
-    >
+    <>
       <p className="notice notice-success">
         Success. Your credential, server, and schedule are now configured.
       </p>
@@ -74,6 +67,24 @@ export default function WizardSuccessPage() {
           View Credentials
         </Link>
       </div>
+    </>
+  );
+}
+
+export default function WizardSuccessPage() {
+  return (
+    <Shell
+      title="Wizard Complete"
+      subtitle="Automation resources were configured successfully."
+      actions={
+        <Link className="btn btn-secondary" href="/wizard">
+          New Wizard Run
+        </Link>
+      }
+    >
+      <Suspense>
+        <WizardSuccessContent />
+      </Suspense>
     </Shell>
   );
 }
