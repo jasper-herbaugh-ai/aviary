@@ -4,11 +4,15 @@ export function apiBase() {
   if (process.env.NEXT_PUBLIC_API_BASE_URL) {
     return process.env.NEXT_PUBLIC_API_BASE_URL;
   }
-  // When no env var is set (e.g. Docker Compose without build args),
-  // derive the API URL from the current browser location so it works
-  // regardless of the host the user is accessing from.
+  // When no env var is baked in, derive the API URL from the browser location.
+  // On standard ports (reverse proxy like Traefik), the API is on the same
+  // origin. On non-standard ports (plain Docker Compose), use port 4000.
   if (typeof window !== "undefined") {
-    return `${window.location.protocol}//${window.location.hostname}:4000`;
+    const { protocol, hostname, port } = window.location;
+    if (!port || port === "80" || port === "443") {
+      return `${protocol}//${hostname}`;
+    }
+    return `${protocol}//${hostname}:4000`;
   }
   return "http://localhost:4000";
 }

@@ -22,8 +22,6 @@ services:
 
   web:
     image: aviary/web:latest
-    environment:
-      NEXT_PUBLIC_API_BASE_URL: http://api:4000
     ports:
       - target: 3000
         published: 3000
