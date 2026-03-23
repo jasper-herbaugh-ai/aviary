@@ -5,6 +5,7 @@ services:
       - stack.env
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-aviary}
     volumes:
       - postgres_data:/var/lib/postgresql
@@ -19,6 +20,8 @@ services:
   api:
     image: ghcr.io/robertherbaugh/merlin:latest
     container_name: ${COMPOSE_PROJECT_NAME:-aviary}-api
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-aviary}
     env_file:
       - stack.env
     expose:
@@ -63,6 +66,8 @@ services:
   worker:
     image: ghcr.io/robertherbaugh/swift:latest
     container_name: ${COMPOSE_PROJECT_NAME:-aviary}-worker
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-aviary}
     env_file:
       - stack.env
     depends_on:
@@ -75,7 +80,8 @@ volumes:
 
 networks:
   internal:
-    # Private network for inter-service communication
+    name: ${COMPOSE_PROJECT_NAME:-aviary}-network
+    driver: bridge
   traefik:
     external: true
     name: ${TRAEFIK_NETWORK:-traefik}
