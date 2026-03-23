@@ -6,6 +6,7 @@ COPY apps/web/package.json apps/web/package.json
 COPY packages/db/package.json packages/db/package.json
 COPY packages/types/package.json packages/types/package.json
 COPY packages/playbooks/package.json packages/playbooks/package.json
+COPY packages/proto/package.json packages/proto/package.json
 RUN bun install --frozen-lockfile
 COPY . .
 RUN bun --filter=@aviary/web run build
