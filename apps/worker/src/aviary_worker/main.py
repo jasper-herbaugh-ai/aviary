@@ -6,17 +6,20 @@ import shlex
 import shutil
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 import asyncpg
 import asyncssh
+import grpc
 from dotenv import load_dotenv
 
 from .config import Config, load_config
 from .crypto import decrypt_secret
 from .job_results import build_failure_job_result
 from .parsers import parse_output
+from .proto import job_events_pb2, job_events_pb2_grpc
 from .ssh import resolve_ssh_username
 
 LOGGER = logging.getLogger("aviary-worker")
@@ -280,6 +283,57 @@ async def evaluate_alerts_via_api(config: Config, job_id: str, server_id: str, m
         return False
 
 
+class JobEventStream:
+    def __init__(self, config: Config, job_id: str) -> None:
+        self._config = config
+        self._job_id = job_id
+        self._seq = 0
+        self._channel: Optional[grpc.aio.Channel] = None
+        self._call: Optional[grpc.aio.StreamUnaryCall] = None
+        self._disabled = False
+
+    async def __aenter__(self) -> "JobEventStream":
+        target = self._config.api_grpc_target.strip()
+        if not target:
+            self._disabled = True
+            return self
+
+        self._channel = grpc.aio.insecure_channel(target)
+        stub = job_events_pb2_grpc.JobEventIngressStub(self._channel)
+        self._call = stub.PublishEvents(metadata=(("x-internal-token", self._config.internal_api_token),))
+        return self
+
+    async def emit(self, event_type: str, payload: Dict[str, Any]) -> None:
+        if self._disabled or self._call is None:
+            return
+
+        self._seq += 1
+        request = job_events_pb2.PublishEventRequest(
+            job_id=self._job_id,
+            seq=self._seq,
+            event_type=event_type,
+            payload_json=_to_json(payload),
+            emitted_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        )
+
+        try:
+            await self._call.write(request)
+        except Exception:  # noqa: BLE001
+            self._disabled = True
+            LOGGER.exception("Job %s: failed to publish stream event type=%s", self._job_id, event_type)
+
+    async def __aexit__(self, *_args: object) -> None:
+        if self._call is not None and not self._disabled:
+            try:
+                await self._call.done_writing()
+                await self._call
+            except Exception:  # noqa: BLE001
+                LOGGER.exception("Job %s: failed to finalize gRPC event stream", self._job_id)
+
+        if self._channel is not None:
+            await self._channel.close()
+
+
 async def execute_step(
     ssh_conn: asyncssh.SSHClientConnection,
     command: str,
@@ -340,224 +394,334 @@ async def run_job(pool: asyncpg.Pool, config: Config, job: AppJob) -> Dict[str, 
         job.server_id,
         job.use_sudo,
     )
-    context: Optional[Dict[str, Any]] = None
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            UPDATE jobs
-            SET status = 'running', started_at = COALESCE(started_at, NOW())
-            WHERE id = $1
-            """,
-            job.id,
-        )
-        try:
-            LOGGER.info("Job %s: loading job context", job.id)
-            context = await get_job_context(conn, job)
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("Job %s failed during context load: %s", job.id, exc)
-            failure_result = build_failure_job_result(
-                step_order=0,
-                command="__prepare__",
-                status="failed",
-                message=f"{type(exc).__name__}: {exc}",
-            )
-            await safe_insert_job_result(conn, job.id, failure_result)
+    async with JobEventStream(config, job.id) as event_stream:
+        context: Optional[Dict[str, Any]] = None
+        async with pool.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE jobs
-                SET status = 'failed', completed_at = NOW()
+                SET status = 'running', started_at = COALESCE(started_at, NOW())
                 WHERE id = $1
                 """,
                 job.id,
             )
+            await event_stream.emit(
+                "job.running",
+                {
+                    "jobId": job.id,
+                    "playbookId": job.playbook_id,
+                    "serverId": job.server_id,
+                    "useSudo": job.use_sudo,
+                },
+            )
+            try:
+                LOGGER.info("Job %s: loading job context", job.id)
+                context = await get_job_context(conn, job)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("Job %s failed during context load: %s", job.id, exc)
+                failure_result = build_failure_job_result(
+                    step_order=0,
+                    command="__prepare__",
+                    status="failed",
+                    message=f"{type(exc).__name__}: {exc}",
+                )
+                await safe_insert_job_result(conn, job.id, failure_result)
+                await conn.execute(
+                    """
+                    UPDATE jobs
+                    SET status = 'failed', completed_at = NOW()
+                    WHERE id = $1
+                    """,
+                    job.id,
+                )
+                await event_stream.emit(
+                    "job.completed",
+                    {
+                        "jobId": job.id,
+                        "status": "failed",
+                        "metrics": {},
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                )
 
+                return {
+                    "job_id": job.id,
+                    "status": "failed",
+                    "metrics": {},
+                }
+
+        if context is None:
+            await event_stream.emit(
+                "job.completed",
+                {
+                    "jobId": job.id,
+                    "status": "failed",
+                    "metrics": {},
+                    "error": "job context unavailable",
+                },
+            )
             return {
                 "job_id": job.id,
                 "status": "failed",
                 "metrics": {},
             }
 
-    if context is None:
-        return {
-            "job_id": job.id,
-            "status": "failed",
-            "metrics": {},
+        credential = context["credential"]
+        server_username = context["server"]["username"]
+        secret = decrypt_secret(str(credential["encrypted_value"]), config.encryption_key)
+        resolved_username = resolve_ssh_username(
+            str(server_username) if server_username is not None else None, str(credential["username"])
+        )
+
+        connect_kwargs: Dict[str, Any] = {
+            "host": str(context["server"]["ip_address"]),
+            "port": int(context["server"]["port"]),
+            "username": resolved_username,
+            "known_hosts": None,
         }
+        LOGGER.info(
+            "Job %s: context ready server=%s host=%s:%s username=%s credential=%s type=%s steps=%s",
+            job.id,
+            context["server"]["hostname"],
+            context["server"]["ip_address"],
+            context["server"]["port"],
+            resolved_username,
+            context["credential"]["id"],
+            context["credential"]["type"],
+            len(context["steps"]),
+        )
+        await event_stream.emit(
+            "job.context_ready",
+            {
+                "jobId": job.id,
+                "server": {
+                    "id": str(context["server"]["id"]),
+                    "hostname": str(context["server"]["hostname"]),
+                    "ipAddress": str(context["server"]["ip_address"]),
+                    "port": int(context["server"]["port"]),
+                    "username": resolved_username,
+                },
+                "stepCount": len(context["steps"]),
+            },
+        )
 
-    credential = context["credential"]
-    server_username = context["server"]["username"]
-    secret = decrypt_secret(str(credential["encrypted_value"]), config.encryption_key)
-    resolved_username = resolve_ssh_username(
-        str(server_username) if server_username is not None else None, str(credential["username"])
-    )
+        if credential["type"] == "password":
+            connect_kwargs["password"] = secret
+        else:
+            connect_kwargs["client_keys"] = [asyncssh.import_private_key(secret)]
 
-    connect_kwargs: Dict[str, Any] = {
-        "host": str(context["server"]["ip_address"]),
-        "port": int(context["server"]["port"]),
-        "username": resolved_username,
-        "known_hosts": None,
-    }
-    LOGGER.info(
-        "Job %s: context ready server=%s host=%s:%s username=%s credential=%s type=%s steps=%s",
-        job.id,
-        context["server"]["hostname"],
-        context["server"]["ip_address"],
-        context["server"]["port"],
-        resolved_username,
-        context["credential"]["id"],
-        context["credential"]["type"],
-        len(context["steps"]),
-    )
+        status = "success"
+        metrics: Dict[str, float] = {}
+        failure_result: Optional[Dict[str, Any]] = None
+        current_step_order = 0
+        current_step_command = "__connect__"
 
-    if credential["type"] == "password":
-        connect_kwargs["password"] = secret
-    else:
-        connect_kwargs["client_keys"] = [asyncssh.import_private_key(secret)]
+        async def run_steps(ssh_conn: asyncssh.SSHClientConnection) -> None:
+            nonlocal status, current_step_order, current_step_command
 
-    status = "success"
-    metrics: Dict[str, float] = {}
-    failure_result: Optional[Dict[str, Any]] = None
-    current_step_order = 0
-    current_step_command = "__connect__"
-
-    async def run_steps(ssh_conn: asyncssh.SSHClientConnection) -> None:
-        nonlocal status, current_step_order, current_step_command
-
-        LOGGER.info("Job %s: SSH connection established", job.id)
-        for step in context["steps"]:
-            order = int(step["order"])
-            command = _apply_sudo(str(step["command"]), job.use_sudo)
-            current_step_order = order
-            current_step_command = command
-            expected_exit_code = int(step["expected_exit_code"])
-            parse_rule = step["parse_rule"] or {}
-            parse_kind = parse_rule.get("kind", "raw") if isinstance(parse_rule, dict) else "raw"
-            LOGGER.info(
-                "Job %s: executing step=%s expected_exit=%s command=%s",
-                job.id,
-                order,
-                expected_exit_code,
-                command,
-            )
-
-            started = asyncio.get_running_loop().time()
-            result = await execute_step(ssh_conn, command, config.command_timeout_s)
-            duration_ms = int((asyncio.get_running_loop().time() - started) * 1000)
-            LOGGER.info(
-                "Job %s: step=%s completed exit=%s duration_ms=%s",
-                job.id,
-                order,
-                result["exit_code"],
-                duration_ms,
-            )
-
-            parsed_values = parse_output(str(parse_kind), str(result["stdout"]))
-
-            if "disk_percent" in parsed_values:
-                metrics["disk_percent"] = float(parsed_values["disk_percent"])
-            if "memory_percent" in parsed_values:
-                metrics["memory_percent"] = float(parsed_values["memory_percent"])
-
-            async with pool.acquire() as conn:
-                await safe_insert_job_result(
-                    conn,
-                    job.id,
-                    {
-                        "step_order": order,
-                        "command": command,
-                        "exit_code": result["exit_code"],
-                        "stdout": result["stdout"],
-                        "stderr": result["stderr"],
-                        "duration_ms": duration_ms,
-                        "parsed_values": parsed_values,
-                    },
-                )
-
-            if int(result["exit_code"]) != expected_exit_code:
-                LOGGER.warning(
-                    "Job %s: step=%s exit mismatch expected=%s actual=%s",
+            LOGGER.info("Job %s: SSH connection established", job.id)
+            await event_stream.emit("ssh.connected", {"jobId": job.id})
+            for step in context["steps"]:
+                order = int(step["order"])
+                command = _apply_sudo(str(step["command"]), job.use_sudo)
+                current_step_order = order
+                current_step_command = command
+                expected_exit_code = int(step["expected_exit_code"])
+                parse_rule = step["parse_rule"] or {}
+                parse_kind = parse_rule.get("kind", "raw") if isinstance(parse_rule, dict) else "raw"
+                LOGGER.info(
+                    "Job %s: executing step=%s expected_exit=%s command=%s",
                     job.id,
                     order,
                     expected_exit_code,
-                    result["exit_code"],
+                    command,
                 )
-                status = "failed"
-                break
+                await event_stream.emit(
+                    "step.started",
+                    {
+                        "jobId": job.id,
+                        "stepOrder": order,
+                        "command": command,
+                        "expectedExitCode": expected_exit_code,
+                    },
+                )
 
-    try:
-        LOGGER.info(
-            "Job %s: opening SSH connection to %s:%s as %s",
-            job.id,
-            connect_kwargs["host"],
-            connect_kwargs["port"],
-            connect_kwargs["username"],
-        )
+                started = asyncio.get_running_loop().time()
+                result = await execute_step(ssh_conn, command, config.command_timeout_s)
+                duration_ms = int((asyncio.get_running_loop().time() - started) * 1000)
+                LOGGER.info(
+                    "Job %s: step=%s completed exit=%s duration_ms=%s",
+                    job.id,
+                    order,
+                    result["exit_code"],
+                    duration_ms,
+                )
+
+                parsed_values = parse_output(str(parse_kind), str(result["stdout"]))
+
+                if "disk_percent" in parsed_values:
+                    metrics["disk_percent"] = float(parsed_values["disk_percent"])
+                if "memory_percent" in parsed_values:
+                    metrics["memory_percent"] = float(parsed_values["memory_percent"])
+
+                async with pool.acquire() as conn:
+                    await safe_insert_job_result(
+                        conn,
+                        job.id,
+                        {
+                            "step_order": order,
+                            "command": command,
+                            "exit_code": result["exit_code"],
+                            "stdout": result["stdout"],
+                            "stderr": result["stderr"],
+                            "duration_ms": duration_ms,
+                            "parsed_values": parsed_values,
+                        },
+                    )
+
+                await event_stream.emit(
+                    "step.completed",
+                    {
+                        "jobId": job.id,
+                        "stepOrder": order,
+                        "command": command,
+                        "exitCode": int(result["exit_code"]),
+                        "stdout": str(result["stdout"]),
+                        "stderr": str(result["stderr"]),
+                        "durationMs": duration_ms,
+                        "parsedValues": parsed_values,
+                    },
+                )
+
+                if int(result["exit_code"]) != expected_exit_code:
+                    LOGGER.warning(
+                        "Job %s: step=%s exit mismatch expected=%s actual=%s",
+                        job.id,
+                        order,
+                        expected_exit_code,
+                        result["exit_code"],
+                    )
+                    await event_stream.emit(
+                        "step.exit_mismatch",
+                        {
+                            "jobId": job.id,
+                            "stepOrder": order,
+                            "expectedExitCode": expected_exit_code,
+                            "actualExitCode": int(result["exit_code"]),
+                        },
+                    )
+                    status = "failed"
+                    break
+
         try:
-            async with asyncssh.connect(**connect_kwargs) as ssh_conn:
-                await run_steps(ssh_conn)
-        except OSError as exc:
-            if exc.errno != 65:
-                raise
-
-            nc_path = shutil.which("nc")
-            if not nc_path:
-                raise
-
-            host = str(connect_kwargs["host"])
-            port = int(connect_kwargs["port"])
-            proxy_command = f"{shlex.quote(nc_path)} {shlex.quote(host)} {port}"
-            LOGGER.warning(
-                "Job %s: direct SSH connect failed with errno=%s; retrying via proxy_command=%s",
+            LOGGER.info(
+                "Job %s: opening SSH connection to %s:%s as %s",
                 job.id,
-                exc.errno,
-                proxy_command,
+                connect_kwargs["host"],
+                connect_kwargs["port"],
+                connect_kwargs["username"],
             )
-            retry_kwargs = {**connect_kwargs, "proxy_command": proxy_command}
-            async with asyncssh.connect(**retry_kwargs) as ssh_conn:
-                await run_steps(ssh_conn)
+            try:
+                async with asyncssh.connect(**connect_kwargs) as ssh_conn:
+                    await run_steps(ssh_conn)
+            except OSError as exc:
+                if exc.errno != 65:
+                    raise
 
-    except asyncio.TimeoutError:
-        status = "timeout"
-        failure_result = build_failure_job_result(
-            step_order=current_step_order,
-            command=current_step_command,
-            status=status,
-            message=f"Command timed out after {config.command_timeout_s} seconds.",
+                nc_path = shutil.which("nc")
+                if not nc_path:
+                    raise
+
+                host = str(connect_kwargs["host"])
+                port = int(connect_kwargs["port"])
+                proxy_command = f"{shlex.quote(nc_path)} {shlex.quote(host)} {port}"
+                LOGGER.warning(
+                    "Job %s: direct SSH connect failed with errno=%s; retrying via proxy_command=%s",
+                    job.id,
+                    exc.errno,
+                    proxy_command,
+                )
+                await event_stream.emit(
+                    "ssh.retry_with_proxy",
+                    {
+                        "jobId": job.id,
+                        "proxyCommand": proxy_command,
+                        "errno": int(exc.errno) if exc.errno is not None else None,
+                    },
+                )
+                retry_kwargs = {**connect_kwargs, "proxy_command": proxy_command}
+                async with asyncssh.connect(**retry_kwargs) as ssh_conn:
+                    await run_steps(ssh_conn)
+
+        except asyncio.TimeoutError:
+            status = "timeout"
+            failure_result = build_failure_job_result(
+                step_order=current_step_order,
+                command=current_step_command,
+                status=status,
+                message=f"Command timed out after {config.command_timeout_s} seconds.",
+            )
+            LOGGER.error("Job %s: command timeout while executing %s", job.id, current_step_command)
+            await event_stream.emit(
+                "step.timeout",
+                {
+                    "jobId": job.id,
+                    "stepOrder": current_step_order,
+                    "command": current_step_command,
+                    "timeoutSeconds": config.command_timeout_s,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Job %s failed: %s", job.id, exc)
+            status = "failed"
+            failure_result = build_failure_job_result(
+                step_order=current_step_order,
+                command=current_step_command,
+                status=status,
+                message=f"{type(exc).__name__}: {exc}",
+            )
+            await event_stream.emit(
+                "step.error",
+                {
+                    "jobId": job.id,
+                    "stepOrder": current_step_order,
+                    "command": current_step_command,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+
+        async with pool.acquire() as conn:
+            if failure_result:
+                await safe_insert_job_result(conn, job.id, failure_result)
+
+            await conn.execute(
+                """
+                UPDATE jobs
+                SET status = $2, completed_at = NOW()
+                WHERE id = $1
+                """,
+                job.id,
+                status,
+            )
+            alerts_via_api = await evaluate_alerts_via_api(config, job.id, job.server_id, metrics)
+            if not alerts_via_api:
+                await evaluate_alerts(conn, job.server_id, metrics)
+            LOGGER.info("Job %s: completed with status=%s metrics=%s", job.id, status, metrics)
+
+        await event_stream.emit(
+            "job.completed",
+            {
+                "jobId": job.id,
+                "status": status,
+                "metrics": metrics,
+            },
         )
-        LOGGER.error("Job %s: command timeout while executing %s", job.id, current_step_command)
-    except Exception as exc:  # noqa: BLE001
-        LOGGER.exception("Job %s failed: %s", job.id, exc)
-        status = "failed"
-        failure_result = build_failure_job_result(
-            step_order=current_step_order,
-            command=current_step_command,
-            status=status,
-            message=f"{type(exc).__name__}: {exc}",
-        )
 
-    async with pool.acquire() as conn:
-        if failure_result:
-            await safe_insert_job_result(conn, job.id, failure_result)
-
-        await conn.execute(
-            """
-            UPDATE jobs
-            SET status = $2, completed_at = NOW()
-            WHERE id = $1
-            """,
-            job.id,
-            status,
-        )
-        alerts_via_api = await evaluate_alerts_via_api(config, job.id, job.server_id, metrics)
-        if not alerts_via_api:
-            await evaluate_alerts(conn, job.server_id, metrics)
-        LOGGER.info("Job %s: completed with status=%s metrics=%s", job.id, status, metrics)
-
-    return {
-        "job_id": job.id,
-        "status": status,
-        "metrics": metrics,
-    }
+        return {
+            "job_id": job.id,
+            "status": status,
+            "metrics": metrics,
+        }
 
 
 async def worker_loop(config: Config) -> None:

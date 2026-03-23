@@ -7,6 +7,7 @@ class Config:
     database_url: str
     encryption_key: str
     api_base_url: str
+    api_grpc_target: str
     internal_api_token: str
     pgboss_schema: str
     pgboss_queue: str
@@ -20,6 +21,7 @@ def load_config() -> Config:
         database_url=os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/aviary"),
         encryption_key=os.environ.get("CREDENTIAL_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef"),
         api_base_url=os.environ.get("WORKER_API_BASE_URL", "http://localhost:4000"),
+        api_grpc_target=os.environ.get("WORKER_API_GRPC_TARGET", "localhost:50051"),
         internal_api_token=os.environ.get("INTERNAL_API_TOKEN", "internal-token"),
         pgboss_schema=os.environ.get("PGBOSS_SCHEMA", "pgboss"),
         pgboss_queue=os.environ.get("PGBOSS_QUEUE", "playbook-jobs"),

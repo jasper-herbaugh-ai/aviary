@@ -44,7 +44,7 @@ The primary design philosophy is **simplicity without sacrificing scalability**.
 │  - Consumes jobs from pgBoss queue via Postgres     │
 │  - SSH execution (AsyncSSH, agent-less)             │
 │  - Playbook interpreter (shell scripts / commands)  │
-│  - Result + stdout reporting back to API/DB         │
+│  - Streams execution events to API via gRPC         │
 │  - Stateless — scale horizontally as needed         │
 └──────────────────────┬──────────────────────────────┘
                        │ SSH (port 22)
@@ -60,7 +60,7 @@ The primary design philosophy is **simplicity without sacrificing scalability**.
 
 ### 1. Frontend — Next.js / React
 
-The user-facing interface. Wizard-driven for onboarding new servers and creating playbooks. Communicates exclusively with the API Server via REST/WebSocket.
+The user-facing interface. Wizard-driven for onboarding new servers and creating playbooks. Communicates exclusively with the API Server via REST/SSE.
 
 **Key responsibilities:**
 - Server onboarding wizard (hostname, IP, port, credential selection, tag assignment)

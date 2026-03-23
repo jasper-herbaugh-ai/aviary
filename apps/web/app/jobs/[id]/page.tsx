@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
-import { apiFetch } from "../../../components/api";
+import { getAuthToken } from "../../../components/auth";
+import { apiBase, apiFetch } from "../../../components/api";
 import { formatCompactDate } from "../../../components/format";
 import { Shell } from "../../../components/shell";
 
@@ -26,11 +27,37 @@ type Result = {
   durationMs: number;
 };
 
+type StreamEnvelope = {
+  jobId: string;
+  seq: number;
+  type: string;
+  emittedAt: string;
+  payload: Record<string, unknown>;
+};
+
 function statusClass(status: string): string {
   const value = status.toLowerCase();
   if (value === "success" || value === "completed" || value === "succeeded") return "badge badge-green";
   if (value === "queued" || value === "running") return "badge badge-yellow";
   return "badge badge-red";
+}
+
+function upsertResult(current: Result[], incoming: Result): Result[] {
+  const next = [...current];
+  const index = next.findIndex((entry) => entry.stepOrder === incoming.stepOrder);
+  if (index === -1) {
+    next.push(incoming);
+  } else {
+    next[index] = incoming;
+  }
+  next.sort((a, b) => a.stepOrder - b.stepOrder);
+  return next;
+}
+
+function isTerminalStatus(status: string | null | undefined): boolean {
+  if (!status) return false;
+  const normalized = status.toLowerCase();
+  return normalized !== "queued" && normalized !== "running";
 }
 
 export default function JobDetailPage() {
@@ -41,6 +68,7 @@ export default function JobDetailPage() {
   const [results, setResults] = useState<Result[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const lastSeqRef = useRef(0);
 
   useEffect(() => {
     async function loadJob() {
@@ -68,6 +96,180 @@ export default function JobDetailPage() {
 
     void loadJob();
   }, [id]);
+
+  useEffect(() => {
+    if (!id || isTerminalStatus(job?.status)) {
+      return;
+    }
+
+    const token = getAuthToken();
+    if (!token) {
+      return;
+    }
+
+    const controller = new AbortController();
+    let running = true;
+
+    const parseFrame = (rawFrame: string) => {
+      const lines = rawFrame.split("\n");
+      let eventName = "message";
+      let eventId: number | null = null;
+      const dataLines: string[] = [];
+
+      for (const rawLine of lines) {
+        const line = rawLine.replace(/\r$/, "");
+        if (line.startsWith("event:")) {
+          eventName = line.slice("event:".length).trim();
+          continue;
+        }
+        if (line.startsWith("id:")) {
+          const parsedId = Number(line.slice("id:".length).trim());
+          if (Number.isInteger(parsedId) && parsedId > 0) {
+            eventId = parsedId;
+            lastSeqRef.current = Math.max(lastSeqRef.current, parsedId);
+          }
+          continue;
+        }
+        if (line.startsWith("data:")) {
+          dataLines.push(line.slice("data:".length).trimStart());
+        }
+      }
+
+      if (dataLines.length === 0) {
+        return;
+      }
+
+      let envelope: StreamEnvelope;
+      try {
+        envelope = JSON.parse(dataLines.join("\n")) as StreamEnvelope;
+      } catch {
+        return;
+      }
+
+      if (Number.isInteger(envelope.seq) && envelope.seq > 0) {
+        lastSeqRef.current = Math.max(lastSeqRef.current, envelope.seq);
+      } else if (eventId) {
+        envelope.seq = eventId;
+      }
+
+      if (eventName === "job.running") {
+        setJob((current) =>
+          current
+            ? {
+                ...current,
+                status: "running",
+                startedAt: current.startedAt ?? envelope.emittedAt
+              }
+            : current
+        );
+        return;
+      }
+
+      if (eventName === "step.completed") {
+        const payload = envelope.payload;
+        const stepOrder = Number(payload.stepOrder);
+        const exitCode = Number(payload.exitCode);
+        const durationMs = Number(payload.durationMs);
+        if (!Number.isInteger(stepOrder) || !Number.isFinite(exitCode) || !Number.isFinite(durationMs)) {
+          return;
+        }
+
+        const streamed: Result = {
+          id: `stream-${envelope.seq}`,
+          stepOrder,
+          command: typeof payload.command === "string" ? payload.command : "__unknown__",
+          exitCode,
+          stdout: typeof payload.stdout === "string" ? payload.stdout : "",
+          stderr: typeof payload.stderr === "string" ? payload.stderr : "",
+          durationMs
+        };
+
+        setResults((current) => upsertResult(current, streamed));
+        return;
+      }
+
+      if (eventName === "job.completed") {
+        const payload = envelope.payload;
+        const nextStatus = typeof payload.status === "string" ? payload.status : "failed";
+        setJob((current) =>
+          current
+            ? {
+                ...current,
+                status: nextStatus,
+                completedAt: current.completedAt ?? envelope.emittedAt
+              }
+            : current
+        );
+      }
+    };
+
+    const consumeStream = async () => {
+      while (running && !controller.signal.aborted) {
+        try {
+          const headers = new Headers({
+            Authorization: `Bearer ${token}`,
+            Accept: "text/event-stream"
+          });
+
+          if (lastSeqRef.current > 0) {
+            headers.set("Last-Event-ID", String(lastSeqRef.current));
+          }
+
+          const response = await fetch(`${apiBase()}/api/v1/jobs/${id}/events/stream`, {
+            method: "GET",
+            headers,
+            cache: "no-store",
+            signal: controller.signal
+          });
+
+          if (!response.ok || !response.body) {
+            throw new Error(`Unable to connect to event stream (${response.status})`);
+          }
+          setError(null);
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          while (running && !controller.signal.aborted) {
+            const chunk = await reader.read();
+            if (chunk.done) {
+              break;
+            }
+            buffer += decoder.decode(chunk.value, { stream: true });
+
+            while (true) {
+              const boundary = buffer.indexOf("\n\n");
+              if (boundary === -1) {
+                break;
+              }
+
+              const rawFrame = buffer.slice(0, boundary);
+              buffer = buffer.slice(boundary + 2);
+              if (rawFrame.trim().length === 0 || rawFrame.startsWith(":")) {
+                continue;
+              }
+              parseFrame(rawFrame);
+            }
+          }
+        } catch (streamError) {
+          if (controller.signal.aborted) {
+            break;
+          }
+          setError(streamError instanceof Error ? streamError.message : "Stream disconnected");
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+    };
+
+    void consumeStream();
+
+    return () => {
+      running = false;
+      controller.abort();
+    };
+  }, [id, job?.status]);
 
   return (
     <Shell

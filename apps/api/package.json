@@ -16,6 +16,8 @@
   "dependencies": {
     "@aviary/db": "workspace:*",
     "@aviary/types": "workspace:*",
+    "@grpc/grpc-js": "^1.14.1",
+    "@grpc/proto-loader": "^0.8.0",
     "@fastify/cors": "^11.1.0",
     "@fastify/sensible": "^6.0.3",
     "bcryptjs": "^3.0.2",

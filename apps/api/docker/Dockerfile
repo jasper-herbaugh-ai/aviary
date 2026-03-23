@@ -8,4 +8,5 @@ RUN bun install --frozen-lockfile
 COPY . .
 RUN DATABASE_URL=postgresql://postgres:postgres@localhost:5432/aviary bun run db:generate && bun --filter=@aviary/api run build
 EXPOSE 4000
+EXPOSE 50051
 CMD ["bun", "--filter=@aviary/api", "run", "start"]

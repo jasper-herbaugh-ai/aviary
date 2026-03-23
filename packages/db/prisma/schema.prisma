@@ -166,6 +166,7 @@ model Job {
   playbook    Playbook    @relation(fields: [playbookId], references: [id], onDelete: Cascade)
   server      Server      @relation(fields: [serverId], references: [id], onDelete: Cascade)
   results     JobResult[]
+  events      JobEvent[]
 
   @@index([status, enqueuedAt])
   @@index([serverId, enqueuedAt])
@@ -189,6 +190,22 @@ model JobResult {
 
   @@index([jobId, stepOrder])
   @@map("job_results")
+}
+
+model JobEvent {
+  id         String   @id @default(uuid())
+  jobId      String   @map("job_id")
+  seq        Int
+  eventType  String   @map("event_type")
+  payload    Json
+  emittedAt  DateTime @map("emitted_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  job        Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, seq])
+  @@index([jobId, seq])
+  @@map("job_events")
 }
 
 model Alert {

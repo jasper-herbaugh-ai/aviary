@@ -11,6 +11,8 @@ dependencies = [
   "asyncpg>=0.30.0",
   "asyncssh>=2.15.0",
   "cryptography>=44.0.0",
+  "grpcio>=1.78.0",
+  "protobuf>=6.31.1",
   "python-dotenv>=1.1.0"
 ]
 

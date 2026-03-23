@@ -44,6 +44,14 @@ import { startScheduler } from "./scheduler.js";
 import { buildTotpOtpauthUrl, generateTotpSecret, verifyTotpCode } from "./totp.js";
 import { SERVER_WITH_CREDENTIAL_INCLUDE, toSafeServer } from "./servers.js";
 import { intervalToCron, wizardAutomationInputSchema } from "./wizard.js";
+import { startJobEventGrpcServer } from "./job-events-grpc.js";
+import {
+  JobEventBroker,
+  listJobEventsAfter,
+  parseCursorValue,
+  toSseFrame,
+  toSseHeartbeat
+} from "./job-events.js";
 
 const ENC_KEY = getKey(env.CREDENTIAL_ENCRYPTION_KEY);
 const PUBLIC_ROUTES = new Set([
@@ -231,9 +239,18 @@ export async function buildServer() {
   const db = prisma;
   const queue = await createQueueClient();
   const stopScheduler = startScheduler(db, queue);
+  const jobEventBroker = new JobEventBroker();
+  const grpcJobEventServer = await startJobEventGrpcServer({
+    db,
+    broker: jobEventBroker,
+    internalToken: env.INTERNAL_API_TOKEN,
+    port: env.API_GRPC_PORT,
+    logger: app.log
+  });
 
   app.addHook("onClose", async () => {
     stopScheduler();
+    await grpcJobEventServer.close();
     await queue.stop();
     await db.$disconnect();
   });
@@ -242,7 +259,7 @@ export async function buildServer() {
     origin: true,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Authorization", "Content-Type"]
+    allowedHeaders: ["Authorization", "Content-Type", "Last-Event-ID"]
   });
   await app.register(sensible);
 
@@ -1918,6 +1935,70 @@ export async function buildServer() {
   app.get("/api/v1/jobs/:id/results", async (request) => {
     const params = request.params as { id: string };
     return db.jobResult.findMany({ where: { jobId: params.id }, orderBy: { stepOrder: "asc" } });
+  });
+
+  app.get("/api/v1/jobs/:id/events/stream", async (request, reply) => {
+    const params = request.params as { id: string };
+    const query = request.query as { cursor?: string };
+
+    const job = await db.job.findUnique({ where: { id: params.id }, select: { id: true } });
+    if (!job) {
+      throw app.httpErrors.notFound("Job not found");
+    }
+
+    const rawLastEventId = request.headers["last-event-id"];
+    const lastEventIdHeader = Array.isArray(rawLastEventId) ? rawLastEventId[0] : rawLastEventId;
+
+    const cursorFromQuery = parseCursorValue(query.cursor);
+    const cursorFromHeader = parseCursorValue(lastEventIdHeader);
+    const afterSeq = cursorFromQuery ?? cursorFromHeader ?? 0;
+
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no"
+    });
+
+    const replayEvents = await listJobEventsAfter(db, {
+      jobId: params.id,
+      afterSeq,
+      limit: 1_000
+    });
+
+    for (const event of replayEvents) {
+      reply.raw.write(toSseFrame(event));
+    }
+
+    reply.raw.write(toSseHeartbeat());
+
+    let closed = false;
+    const unsubscribe = jobEventBroker.subscribe(params.id, (event) => {
+      if (closed || reply.raw.destroyed) {
+        return;
+      }
+      reply.raw.write(toSseFrame(event));
+    });
+
+    const heartbeat = setInterval(() => {
+      if (closed || reply.raw.destroyed) {
+        return;
+      }
+      reply.raw.write(toSseHeartbeat());
+    }, 15_000);
+
+    const cleanup = () => {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      clearInterval(heartbeat);
+      unsubscribe();
+    };
+
+    request.raw.on("close", cleanup);
+    request.raw.on("error", cleanup);
   });
 
   app.get("/api/v1/alerts", async (request) => {

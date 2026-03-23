@@ -5,6 +5,7 @@ const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   MIGRATE_ON_STARTUP: z.string().default("true"),
   API_PORT: z.coerce.number().default(4000),
+  API_GRPC_PORT: z.coerce.number().default(50051),
   JWT_SECRET: z.string().min(16),
   CREDENTIAL_ENCRYPTION_KEY: z.string().min(32),
   OIDC_ISSUER_URL: z.string().optional(),
