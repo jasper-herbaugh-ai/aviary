@@ -28,11 +28,63 @@ jobs:
     name: Build containers
     runs-on: ubuntu-latest
     needs: test
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract version from package.json
+        id: pkg
+        run: echo "version=$(jq -r .version package.json)" >> $GITHUB_OUTPUT
       - name: Build merlin (API server)
-        run: docker build -f apps/api/docker/Dockerfile -t merlin -t merlin:${{ github.sha }} .
+        run: |
+          docker build -f apps/api/docker/Dockerfile \
+            -t merlin \
+            -t merlin:${{ github.sha }} \
+            -t ghcr.io/${{ github.repository_owner }}/merlin:${{ github.sha }} \
+            -t ghcr.io/${{ github.repository_owner }}/merlin:${{ steps.pkg.outputs.version }} \
+            -t ghcr.io/${{ github.repository_owner }}/merlin:latest \
+            .
       - name: Build perch (frontend)
-        run: docker build -f apps/web/docker/Dockerfile -t perch -t perch:${{ github.sha }} .
+        run: |
+          docker build -f apps/web/docker/Dockerfile \
+            -t perch \
+            -t perch:${{ github.sha }} \
+            -t ghcr.io/${{ github.repository_owner }}/perch:${{ github.sha }} \
+            -t ghcr.io/${{ github.repository_owner }}/perch:${{ steps.pkg.outputs.version }} \
+            -t ghcr.io/${{ github.repository_owner }}/perch:latest \
+            .
       - name: Build swift (python worker)
-        run: docker build -f apps/worker/docker/Dockerfile -t swift -t swift:${{ github.sha }} .
+        run: |
+          docker build -f apps/worker/docker/Dockerfile \
+            -t swift \
+            -t swift:${{ github.sha }} \
+            -t ghcr.io/${{ github.repository_owner }}/swift:${{ github.sha }} \
+            -t ghcr.io/${{ github.repository_owner }}/swift:${{ steps.pkg.outputs.version }} \
+            -t ghcr.io/${{ github.repository_owner }}/swift:latest \
+            .
+      - name: Push merlin to GHCR
+        if: github.event_name == 'push'
+        run: |
+          docker push ghcr.io/${{ github.repository_owner }}/merlin:${{ github.sha }}
+          docker push ghcr.io/${{ github.repository_owner }}/merlin:${{ steps.pkg.outputs.version }}
+          docker push ghcr.io/${{ github.repository_owner }}/merlin:latest
+      - name: Push perch to GHCR
+        if: github.event_name == 'push'
+        run: |
+          docker push ghcr.io/${{ github.repository_owner }}/perch:${{ github.sha }}
+          docker push ghcr.io/${{ github.repository_owner }}/perch:${{ steps.pkg.outputs.version }}
+          docker push ghcr.io/${{ github.repository_owner }}/perch:latest
+      - name: Push swift to GHCR
+        if: github.event_name == 'push'
+        run: |
+          docker push ghcr.io/${{ github.repository_owner }}/swift:${{ github.sha }}
+          docker push ghcr.io/${{ github.repository_owner }}/swift:${{ steps.pkg.outputs.version }}
+          docker push ghcr.io/${{ github.repository_owner }}/swift:latest
