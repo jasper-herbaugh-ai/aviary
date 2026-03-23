@@ -724,9 +724,40 @@ async def run_job(pool: asyncpg.Pool, config: Config, job: AppJob) -> Dict[str, 
         }
 
 
+async def _wait_for_pgboss_schema(pool: asyncpg.Pool, schema: str, timeout: float = 120) -> None:
+    """Wait for the pgboss schema to be created by the API service."""
+    safe_schema = _safe_identifier(schema)
+    deadline = asyncio.get_event_loop().time() + timeout
+    delay = 2
+    while True:
+        try:
+            async with pool.acquire() as conn:
+                exists = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'job')",
+                    schema,
+                )
+            if exists:
+                LOGGER.info("pgboss schema %s is ready", schema)
+                return
+        except Exception:  # noqa: BLE001
+            pass
+
+        if asyncio.get_event_loop().time() >= deadline:
+            raise RuntimeError(
+                f"Timed out waiting for {safe_schema}.job table. "
+                "Ensure the API service has started and initialized the database."
+            )
+
+        LOGGER.info("Waiting for %s.job table to be created by the API... retrying in %ds", safe_schema, delay)
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, 15)
+
+
 async def worker_loop(config: Config) -> None:
     pool = await asyncpg.create_pool(dsn=config.database_url, min_size=1, max_size=config.worker_concurrency)
     semaphore = asyncio.Semaphore(config.worker_concurrency)
+
+    await _wait_for_pgboss_schema(pool, config.pgboss_schema)
 
     async def process(claim: QueueClaim) -> None:
         async with semaphore:

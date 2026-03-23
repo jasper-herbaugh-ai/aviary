@@ -29,6 +29,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bun -e 'const r = await fetch(\"http://localhost:4000/health\"); if (!r.ok) process.exit(1);'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
 
   web:
     build:
@@ -37,7 +43,8 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
   worker:
     build:
@@ -48,7 +55,8 @@ services:
     environment:
       WORKER_API_BASE_URL: http://api:4000
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
 volumes:
   postgres_data:
