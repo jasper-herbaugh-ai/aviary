@@ -8,6 +8,8 @@ COPY packages/types/package.json packages/types/package.json
 COPY packages/playbooks/package.json packages/playbooks/package.json
 RUN bun install --frozen-lockfile
 COPY . .
+ARG NEXT_PUBLIC_API_BASE_URL
+ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
 RUN bun --filter=@aviary/web run build
 EXPOSE 3000
 CMD ["bun", "--filter=@aviary/web", "run", "start"]

@@ -1,7 +1,16 @@
 import { getAuthToken } from "./auth";
 
 export function apiBase() {
-  return process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
+  if (process.env.NEXT_PUBLIC_API_BASE_URL) {
+    return process.env.NEXT_PUBLIC_API_BASE_URL;
+  }
+  // When no env var is set (e.g. Docker Compose without build args),
+  // derive the API URL from the current browser location so it works
+  // regardless of the host the user is accessing from.
+  if (typeof window !== "undefined") {
+    return `${window.location.protocol}//${window.location.hostname}:4000`;
+  }
+  return "http://localhost:4000";
 }
 
 type ApiRequestOptions = Omit<RequestInit, "body"> & {
