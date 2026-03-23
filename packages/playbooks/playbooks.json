@@ -1,0 +1,81 @@
+[
+  {
+    "name": "apt-upgrade",
+    "description": "apt update && apt upgrade -y with package snapshot",
+    "steps": [
+      { "order": 1, "command": "apt list --installed", "expectedExitCode": 0, "parseRule": { "kind": "raw" } },
+      { "order": 2, "command": "apt update && apt upgrade -y", "expectedExitCode": 0, "parseRule": { "kind": "raw" } },
+      { "order": 3, "command": "apt list --installed", "expectedExitCode": 0, "parseRule": { "kind": "raw" } }
+    ]
+  },
+  {
+    "name": "dnf-upgrade",
+    "description": "dnf update -y",
+    "steps": [
+      { "order": 1, "command": "dnf update -y", "expectedExitCode": 0, "parseRule": { "kind": "raw" } }
+    ]
+  },
+  {
+    "name": "disk-health-check",
+    "description": "Parse disk usage from df -h",
+    "steps": [
+      { "order": 1, "command": "df -h", "expectedExitCode": 0, "parseRule": { "kind": "df" } }
+    ]
+  },
+  {
+    "name": "memory-check",
+    "description": "Parse memory from free -m",
+    "steps": [
+      { "order": 1, "command": "free -m", "expectedExitCode": 0, "parseRule": { "kind": "free" } }
+    ]
+  },
+  {
+    "name": "service-status",
+    "description": "Check a named systemd service",
+    "steps": [
+      { "order": 1, "command": "systemctl is-active {{service_name}}", "expectedExitCode": 0, "parseRule": { "kind": "service_status" } }
+    ]
+  },
+  {
+    "name": "reboot-check",
+    "description": "Check if reboot is required",
+    "steps": [
+      { "order": 1, "command": "test -f /var/run/reboot-required && echo required || echo not-required", "expectedExitCode": 0, "parseRule": { "kind": "raw" } }
+    ]
+  },
+  {
+    "name": "uptime-check",
+    "description": "Parse uptime and load averages",
+    "steps": [
+      { "order": 1, "command": "uptime", "expectedExitCode": 0, "parseRule": { "kind": "uptime" } }
+    ]
+  },
+  {
+    "name": "journal-errors",
+    "description": "Tail 50 error logs from journal",
+    "steps": [
+      { "order": 1, "command": "journalctl -p err -n 50 --no-pager", "expectedExitCode": 0, "parseRule": { "kind": "raw" } }
+    ]
+  },
+  {
+    "name": "docker-health",
+    "description": "List running docker containers",
+    "steps": [
+      { "order": 1, "command": "docker ps --format '{{.Names}} {{.Status}}'", "expectedExitCode": 0, "parseRule": { "kind": "docker_ps" } }
+    ]
+  },
+  {
+    "name": "failed-logins",
+    "description": "Failed ssh logins in last 24h",
+    "steps": [
+      { "order": 1, "command": "journalctl --since '24 hours ago' | grep -i 'failed password'", "expectedExitCode": 0, "parseRule": { "kind": "failed_logins" } }
+    ]
+  },
+  {
+    "name": "cert-expiry-check",
+    "description": "Check cert expiry for domain:port",
+    "steps": [
+      { "order": 1, "command": "echo | openssl s_client -servername {{domain}} -connect {{domain}}:{{port}} 2>/dev/null | openssl x509 -noout -enddate", "expectedExitCode": 0, "parseRule": { "kind": "cert_expiry" } }
+    ]
+  }
+]

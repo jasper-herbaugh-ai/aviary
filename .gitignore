@@ -1,0 +1,17 @@
+node_modules
+.pnpm-store
+.turbo
+.next
+dist
+coverage
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.DS_Store

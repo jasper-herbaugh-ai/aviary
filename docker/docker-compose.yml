@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: aviary
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d aviary"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/docker/Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      API_PORT: 4000
+    ports:
+      - "4000:4000"
+      - "50051:50051"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/docker/Dockerfile
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://api:4000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+  worker:
+    build:
+      context: ..
+      dockerfile: apps/worker/docker/Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      WORKER_API_BASE_URL: http://api:4000
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:

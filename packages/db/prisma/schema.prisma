@@ -1,0 +1,328 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum CredentialType {
+  ssh_key
+  password
+}
+
+enum JobStatus {
+  queued
+  running
+  success
+  failed
+  timeout
+}
+
+enum TargetType {
+  server
+  tag
+  all
+}
+
+enum AlertMetric {
+  disk_percent
+  memory_percent
+  custom
+}
+
+enum AlertOperator {
+  gt
+  lt
+  eq
+}
+
+enum AlertSeverity {
+  info
+  warning
+  critical
+}
+
+enum AlertBackendType {
+  database
+  webhook
+}
+
+enum UserRole {
+  admin
+  operator
+}
+
+model Server {
+  id          String             @id @default(uuid())
+  hostname    String
+  ipAddress   String             @map("ip_address")
+  port        Int                @default(22)
+  username    String?
+  displayName String             @map("display_name")
+  osType      String?            @map("os_type")
+  tags        String[]           @default([])
+  active      Boolean            @default(true)
+  createdAt   DateTime           @default(now()) @map("created_at")
+  updatedAt   DateTime           @updatedAt @map("updated_at")
+
+  credentials ServerCredential[]
+  jobs        Job[]
+  alerts      Alert[]
+
+  @@index([ipAddress])
+  @@index([active])
+  @@map("servers")
+}
+
+model Credential {
+  id             String           @id @default(uuid())
+  name           String
+  type           CredentialType
+  encryptedValue String           @map("encrypted_value")
+  username       String
+  createdAt      DateTime         @default(now()) @map("created_at")
+
+  servers        ServerCredential[]
+
+  @@map("credentials")
+}
+
+model ServerCredential {
+  serverId     String @map("server_id")
+  credentialId String @map("credential_id")
+
+  server       Server     @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  credential   Credential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+
+  @@id([serverId, credentialId])
+  @@map("server_credentials")
+}
+
+model Playbook {
+  id          String         @id @default(uuid())
+  name        String         @unique
+  description String?
+  isBuiltin   Boolean        @default(false) @map("is_builtin")
+  useSudo     Boolean        @default(false) @map("use_sudo")
+  stepsJson   Json?          @map("steps_json")
+  createdBy   String?        @map("created_by")
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+
+  steps       PlaybookStep[]
+  schedules   Schedule[]
+  jobs        Job[]
+
+  @@index([isBuiltin])
+  @@map("playbooks")
+}
+
+model PlaybookStep {
+  id               String   @id @default(uuid())
+  playbookId       String   @map("playbook_id")
+  order            Int
+  command          String
+  expectedExitCode Int      @default(0) @map("expected_exit_code")
+  parseRule        Json?    @map("parse_rule")
+
+  playbook         Playbook @relation(fields: [playbookId], references: [id], onDelete: Cascade)
+
+  @@unique([playbookId, order])
+  @@map("playbook_steps")
+}
+
+model Schedule {
+  id             String    @id @default(uuid())
+  playbookId     String    @map("playbook_id")
+  targetType     TargetType @map("target_type")
+  targetIds      String[]   @default([]) @map("target_ids")
+  cronExpression String     @map("cron_expression")
+  useSudo        Boolean    @default(false) @map("use_sudo")
+  enabled        Boolean    @default(true)
+  lastRunAt      DateTime?  @map("last_run_at")
+  nextRunAt      DateTime?  @map("next_run_at")
+
+  playbook       Playbook   @relation(fields: [playbookId], references: [id], onDelete: Cascade)
+  jobs           Job[]
+
+  @@index([enabled, nextRunAt])
+  @@map("schedules")
+}
+
+model Job {
+  id          String     @id @default(uuid())
+  scheduleId  String?    @map("schedule_id")
+  playbookId  String     @map("playbook_id")
+  serverId    String     @map("server_id")
+  useSudo     Boolean    @default(false) @map("use_sudo")
+  status      JobStatus  @default(queued)
+  queueJobId  String?    @map("queue_job_id")
+  enqueuedAt  DateTime   @default(now()) @map("enqueued_at")
+  startedAt   DateTime?  @map("started_at")
+  completedAt DateTime?  @map("completed_at")
+
+  schedule    Schedule?   @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  playbook    Playbook    @relation(fields: [playbookId], references: [id], onDelete: Cascade)
+  server      Server      @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  results     JobResult[]
+  events      JobEvent[]
+
+  @@index([status, enqueuedAt])
+  @@index([serverId, enqueuedAt])
+  @@index([playbookId, enqueuedAt])
+  @@map("jobs")
+}
+
+model JobResult {
+  id           String   @id @default(uuid())
+  jobId         String   @map("job_id")
+  stepOrder     Int      @map("step_order")
+  command       String
+  exitCode      Int      @map("exit_code")
+  stdout        String
+  stderr        String
+  durationMs    Int      @map("duration_ms")
+  parsedValues  Json?    @map("parsed_values")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  job           Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, stepOrder])
+  @@map("job_results")
+}
+
+model JobEvent {
+  id         String   @id @default(uuid())
+  jobId      String   @map("job_id")
+  seq        Int
+  eventType  String   @map("event_type")
+  payload    Json
+  emittedAt  DateTime @map("emitted_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  job        Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, seq])
+  @@index([jobId, seq])
+  @@map("job_events")
+}
+
+model Alert {
+  id                  String        @id @default(uuid())
+  serverId            String        @map("server_id")
+  metric              AlertMetric
+  threshold           Float
+  operator            AlertOperator
+  severity            AlertSeverity
+  notificationChannel String?       @map("notification_channel")
+  lastTriggeredAt     DateTime?     @map("last_triggered_at")
+
+  server              Server        @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  notifications       Notification[]
+
+  @@index([serverId, metric])
+  @@map("alerts")
+}
+
+model Notification {
+  id             String   @id @default(uuid())
+  alertId        String   @map("alert_id")
+  triggeredAt    DateTime @default(now()) @map("triggered_at")
+  message        String
+  acknowledged   Boolean  @default(false)
+  acknowledgedAt DateTime? @map("acknowledged_at")
+
+  alert          Alert     @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  @@index([alertId, triggeredAt])
+  @@index([acknowledged])
+  @@map("notifications")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String?  @unique
+  oidcSubject  String?  @unique @map("oidc_subject")
+  name         String?
+  passwordHash String?  @map("password_hash")
+  totpEnabled  Boolean  @default(false) @map("totp_enabled")
+  totpSecretEncrypted String? @map("totp_secret_encrypted")
+  totpPendingSecretEncrypted String? @map("totp_pending_secret_encrypted")
+  role         UserRole @default(operator)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  sessions     Session[]
+  webauthnCredentials WebAuthnCredential[]
+  webauthnChallenges  WebAuthnChallenge[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId     String  @map("user_id")
+  tokenHash  String  @unique @map("token_hash")
+  expiresAt  DateTime @map("expires_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model WebAuthnCredential {
+  id                    String   @id @default(uuid())
+  userId                String   @map("user_id")
+  credentialId          String   @unique @map("credential_id")
+  publicKey             String   @map("public_key")
+  counter               Int      @default(0)
+  transports            String[] @default([])
+  deviceType            String?  @map("device_type")
+  backedUp              Boolean? @map("backed_up")
+  createdAt             DateTime @default(now()) @map("created_at")
+  lastUsedAt            DateTime? @map("last_used_at")
+
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("webauthn_credentials")
+}
+
+model WebAuthnChallenge {
+  id        String   @id @default(uuid())
+  challenge String   @unique
+  type      String
+  userId    String?  @map("user_id")
+  rpId      String?  @map("rp_id")
+  origin    String?
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([type, expiresAt])
+  @@index([userId, type])
+  @@map("webauthn_challenges")
+}
+
+model AppConfig {
+  id           String  @id @default("default")
+  oidcEnabled  Boolean @default(false) @map("oidc_enabled")
+  oidcIssuerUrl String? @map("oidc_issuer_url")
+  oidcClientId String? @map("oidc_client_id")
+  oidcClientSecret String? @map("oidc_client_secret")
+  oidcRedirectUri String? @map("oidc_redirect_uri")
+  webauthnRpId String? @map("webauthn_rp_id")
+  webauthnRpName String? @map("webauthn_rp_name")
+  webauthnOrigin String? @map("webauthn_origin")
+  totpIssuer   String? @map("totp_issuer")
+  alertsBackendType AlertBackendType @default(database) @map("alerts_backend_type")
+  alertsBackendWebhookUrl String? @map("alerts_backend_webhook_url")
+  alertsBackendAuthHeader String? @map("alerts_backend_auth_header")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("app_config")
+}

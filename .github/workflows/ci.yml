@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v5
+      - run: bun install --frozen-lockfile
+      - run: cp .env.example .env
+      - run: bun run db:generate
+      - run: bun run lint
+      - run: bun run typecheck
+      - run: bun run test
+      - run: cd apps/worker && uv sync --frozen && uv run pytest -q
+
+  build-containers:
+    name: Build containers
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build merlin (API server)
+        run: docker build -f apps/api/docker/Dockerfile -t merlin -t merlin:${{ github.sha }} .
+      - name: Build perch (frontend)
+        run: docker build -f apps/web/docker/Dockerfile -t perch -t perch:${{ github.sha }} .
+      - name: Build swift (python worker)
+        run: docker build -f apps/worker/docker/Dockerfile -t swift -t swift:${{ github.sha }} .

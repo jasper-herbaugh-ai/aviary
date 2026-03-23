@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package aviary.jobs.v1;
+
+message PublishEventRequest {
+  string job_id = 1;
+  uint64 seq = 2;
+  string event_type = 3;
+  string payload_json = 4;
+  string emitted_at = 5;
+}
+
+message PublishEventsResponse {
+  uint64 accepted_count = 1;
+  uint64 rejected_count = 2;
+}
+
+service JobEventIngress {
+  rpc PublishEvents(stream PublishEventRequest) returns (PublishEventsResponse);
+}
