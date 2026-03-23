@@ -1,0 +1,8 @@
+ALTER TABLE "playbooks"
+  ADD COLUMN "use_sudo" BOOLEAN NOT NULL DEFAULT false;
+
+ALTER TABLE "schedules"
+  ADD COLUMN "use_sudo" BOOLEAN NOT NULL DEFAULT false;
+
+ALTER TABLE "jobs"
+  ADD COLUMN "use_sudo" BOOLEAN NOT NULL DEFAULT false;

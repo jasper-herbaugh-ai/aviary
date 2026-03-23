@@ -1,0 +1,45 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: aviary
+    volumes:
+      - postgres_data:/var/lib/postgresql
+
+  api:
+    image: aviary/api:latest
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/aviary
+      API_PORT: 4000
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  web:
+    image: aviary/web:latest
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://api:4000
+    ports:
+      - target: 3000
+        published: 3000
+        protocol: tcp
+        mode: ingress
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  worker:
+    image: aviary/worker:latest
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: on-failure
+
+volumes:
+  postgres_data:
