@@ -23,7 +23,6 @@ services:
       - ../.env
     environment:
       API_PORT: 4000
-      API_GRPC_PORT: 50051
     ports:
       - "4000:4000"
       - "50051:50051"
@@ -50,7 +49,6 @@ services:
       - ../.env
     environment:
       WORKER_API_BASE_URL: http://api:4000
-      WORKER_API_GRPC_TARGET: api:50051
     depends_on:
       - api
 

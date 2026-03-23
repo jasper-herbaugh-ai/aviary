@@ -98,7 +98,7 @@ export default function JobDetailPage() {
   }, [id]);
 
   useEffect(() => {
-    if (!id || isTerminalStatus(job?.status)) {
+    if (!id || loading || !job || isTerminalStatus(job.status)) {
       return;
     }
 
@@ -256,7 +256,19 @@ export default function JobDetailPage() {
           if (controller.signal.aborted) {
             break;
           }
-          setError(streamError instanceof Error ? streamError.message : "Stream disconnected");
+
+          // Best-effort fallback: refresh snapshot when stream transport drops.
+          try {
+            const [jobResponse, resultResponse] = await Promise.all([
+              apiFetch<Job>(`/api/v1/jobs/${id}`),
+              apiFetch<Result[]>(`/api/v1/jobs/${id}/results`)
+            ]);
+            setJob(jobResponse);
+            setResults(resultResponse);
+            setError(null);
+          } catch {
+            // Keep retrying stream in background without surfacing transport noise.
+          }
         }
 
         await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -269,7 +281,32 @@ export default function JobDetailPage() {
       running = false;
       controller.abort();
     };
-  }, [id, job?.status]);
+  }, [id, loading, job]);
+
+  useEffect(() => {
+    if (!id || loading || !job || isTerminalStatus(job.status)) {
+      return;
+    }
+
+    let cancelled = false;
+    const interval = setInterval(() => {
+      void Promise.all([apiFetch<Job>(`/api/v1/jobs/${id}`), apiFetch<Result[]>(`/api/v1/jobs/${id}/results`)])
+        .then(([jobResponse, resultResponse]) => {
+          if (cancelled) return;
+          setJob(jobResponse);
+          setResults(resultResponse);
+          setError(null);
+        })
+        .catch(() => {
+          // Polling fallback should be silent; initial load errors are already surfaced.
+        });
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [id, loading, job]);
 
   return (
     <Shell

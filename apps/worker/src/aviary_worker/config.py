@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 
 @dataclass(frozen=True)
@@ -16,12 +17,28 @@ class Config:
     worker_concurrency: int
 
 
+def _format_host(host: str) -> str:
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
+
+
+def _default_grpc_target(api_base_url: str) -> str:
+    parsed = urlparse(api_base_url)
+    host = parsed.hostname or "localhost"
+    port = int(os.environ.get("API_GRPC_PORT", "50051"))
+    return f"{_format_host(host)}:{port}"
+
+
 def load_config() -> Config:
+    api_base_url = os.environ.get("WORKER_API_BASE_URL", "http://localhost:4000")
+    api_grpc_target = os.environ.get("WORKER_API_GRPC_TARGET", _default_grpc_target(api_base_url))
+
     return Config(
         database_url=os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/aviary"),
         encryption_key=os.environ.get("CREDENTIAL_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef"),
-        api_base_url=os.environ.get("WORKER_API_BASE_URL", "http://localhost:4000"),
-        api_grpc_target=os.environ.get("WORKER_API_GRPC_TARGET", "localhost:50051"),
+        api_base_url=api_base_url,
+        api_grpc_target=api_grpc_target,
         internal_api_token=os.environ.get("INTERNAL_API_TOKEN", "internal-token"),
         pgboss_schema=os.environ.get("PGBOSS_SCHEMA", "pgboss"),
         pgboss_queue=os.environ.get("PGBOSS_QUEUE", "playbook-jobs"),
