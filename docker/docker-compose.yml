@@ -22,9 +22,10 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-aviary}-api
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-aviary}
+      NEXT_PUBLIC_API_BASE_URL: http://${AVIARY_DOMAIN}
     env_file:
       - .env
-    expose:
+    ports:
       - "${API_PORT:-4000}:4000"
       - "${API_GRPC_PORT:-50051}:50051"
     depends_on:
@@ -32,16 +33,25 @@ services:
         condition: service_healthy
     networks:
       - internal
+    healthcheck:
+      test: ["CMD-SHELL", "bun -e 'const r = await fetch(\"http://localhost:${API_PORT:-4000}/health\"); if (!r.ok) process.exit(1);'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
 
   web:
     image: ghcr.io/robertherbaugh/perch:latest
     container_name: ${COMPOSE_PROJECT_NAME:-aviary}-web
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://${AVIARY_DOMAIN}
     env_file:
       - .env
     ports:
       - "${WEB_PORT:-3000}:3000"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     networks:
       - internal
 
@@ -50,10 +60,12 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-aviary}-worker
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-aviary}
+      WORKER_API_BASE_URL: http://${COMPOSE_PROJECT_NAME:-aviary}-api:${API_PORT:-4000}
     env_file:
       - .env
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     networks:
       - internal
 

@@ -22,6 +22,7 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-aviary}-api
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-aviary}
+      NEXT_PUBLIC_API_BASE_URL: https://${AVIARY_DOMAIN}
     env_file:
       - stack.env
     expose:
@@ -40,16 +41,25 @@ services:
       - "traefik.http.routers.aviary-api.entrypoints=websecure"
       - "traefik.http.routers.aviary-api.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
       - "traefik.http.services.aviary-api.loadbalancer.server.port=${API_PORT:-4000}"
+    healthcheck:
+      test: ["CMD-SHELL", "bun -e 'const r = await fetch(\"http://localhost:${API_PORT:-4000}/health\"); if (!r.ok) process.exit(1);'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
 
   web:
     image: ghcr.io/robertherbaugh/perch:latest
     container_name: ${COMPOSE_PROJECT_NAME:-aviary}-web
     env_file:
       - stack.env
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: https://${AVIARY_DOMAIN}
     expose:
-      - "3000"
+      - "${WEB_PORT:-3000}"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     networks:
       - internal
       - traefik
@@ -59,7 +69,7 @@ services:
       - "traefik.http.routers.aviary-web.rule=Host(`${AVIARY_DOMAIN}`)"
       - "traefik.http.routers.aviary-web.entrypoints=websecure"
       - "traefik.http.routers.aviary-web.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
-      - "traefik.http.services.aviary-web.loadbalancer.server.port=3000"
+      - "traefik.http.services.aviary-web.loadbalancer.server.port=${WEB_PORT:-3000}"
       # Lower priority so api routes match first
       - "traefik.http.routers.aviary-web.priority=1"
 
@@ -68,10 +78,12 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-aviary}-worker
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-aviary}
+      WORKER_API_BASE_URL: http://${COMPOSE_PROJECT_NAME:-aviary}-api:${API_PORT:-4000}
     env_file:
       - stack.env
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     networks:
       - internal
 
