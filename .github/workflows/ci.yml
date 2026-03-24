@@ -27,7 +27,7 @@ jobs:
           python-version: "3.13"
       - uses: astral-sh/setup-uv@v5
       - run: bun install --frozen-lockfile
-      - run: cp .env.example .env
+      - run: cp docker/.env.example .env
       - run: bun run db:generate
       - run: bun run lint
       - run: bun run typecheck
