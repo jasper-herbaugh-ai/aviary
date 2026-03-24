@@ -10,7 +10,7 @@
 
 ## Local development
 
-1. `cp .env.example .env`
+1. `cp docker/.env.example .env`
 2. `docker compose -f docker/docker-compose.yml up -d postgres`
 3. `bun install`
 4. `bun run db:migrate:dev -- --name init` (or rely on API startup migration deploy)
