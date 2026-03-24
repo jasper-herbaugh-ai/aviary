@@ -217,7 +217,7 @@ For detailed instructions, see [`docs/versioning.md`](docs/versioning.md).
 #### Quick start
 
 1. Install deps: `bun install`
-2. Copy env: `cp .env.example .env`
+2. Copy env: `cp docker/.env.example .env`
 3. Start infra: `docker compose -f docker/docker-compose.yml up -d postgres`
 4. Run migrations (or let API startup apply deploy migrations): `bun run db:migrate:dev`
 5. Seed data: `bun run db:seed`
