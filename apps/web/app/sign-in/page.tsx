@@ -13,6 +13,7 @@ type BootstrapStatus = {
   hasUsers: boolean;
   setupRequired: boolean;
   bootstrapAdminEmail: string;
+  oidcConfigured?: boolean;
 };
 
 type WebAuthnAuthOptionsResponse = {
@@ -36,8 +37,10 @@ export default function SignInPage() {
   const [error, setError] = useState<string | null>(null);
   const [loadingPassword, setLoadingPassword] = useState(false);
   const [loadingPasskey, setLoadingPasskey] = useState(false);
+  const [loadingOidc, setLoadingOidc] = useState(false);
   const [checkingStatus, setCheckingStatus] = useState(true);
   const [status, setStatus] = useState<BootstrapStatus | null>(null);
+  const [showTotpField, setShowTotpField] = useState(false);
 
   useEffect(() => {
     if (getAuthToken()) {
@@ -78,7 +81,14 @@ export default function SignInPage() {
 
       if (!response.ok) {
         const body = (await response.json().catch(() => null)) as { error?: string } | null;
-        setError(body?.error ?? `Login failed: ${response.status}`);
+        const message = body?.error ?? `Login failed: ${response.status}`;
+        setError(message);
+        if (message === "MFA code required" || message === "Invalid MFA code") {
+          setShowTotpField(true);
+        } else {
+          setShowTotpField(false);
+          setTotpCode("");
+        }
         return;
       }
 
@@ -189,6 +199,30 @@ export default function SignInPage() {
     }
   }
 
+  async function onOidcLogin() {
+    setError(null);
+    setLoadingOidc(true);
+
+    try {
+      const response = await fetch(`${apiBase()}/api/v1/auth/oidc/login`, {
+        method: "POST"
+      });
+
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as { error?: string } | null;
+        setError(body?.error ?? `SSO login failed: ${response.status}`);
+        return;
+      }
+
+      const body = (await response.json()) as { url: string };
+      window.location.assign(body.url);
+    } catch (oidcError) {
+      setError(oidcError instanceof Error ? oidcError.message : "SSO login failed");
+    } finally {
+      setLoadingOidc(false);
+    }
+  }
+
   if (checkingStatus) {
     return (
       <main className="mx-auto flex min-h-screen max-w-md items-center px-4">
@@ -201,7 +235,7 @@ export default function SignInPage() {
     <main className="mx-auto flex min-h-screen max-w-md items-center px-4">
       <article className="panel w-full p-6">
         <h1 className="m-0 text-2xl font-bold">Sign In</h1>
-        <p className="mb-5 mt-2 text-sm text-slate-600">Use local credentials, TOTP, and enrolled passkey MFA.</p>
+        <p className="mb-5 mt-2 text-sm text-slate-600">Use local credentials, enrolled passkeys, and optional SSO.</p>
 
         {status?.setupRequired ? (
           <p className="notice mb-4">
@@ -234,33 +268,48 @@ export default function SignInPage() {
             />
           </div>
 
-          <div className="field-wrap">
-            <label htmlFor="sign-in-totp">MFA Code (if TOTP enabled)</label>
-            <input
-              className="field"
-              id="sign-in-totp"
-              value={totpCode}
-              onChange={(event) => setTotpCode(event.target.value)}
-              inputMode="numeric"
-              placeholder="123456"
-            />
-          </div>
+          {showTotpField ? (
+            <div className="field-wrap">
+              <label htmlFor="sign-in-totp">MFA Code</label>
+              <input
+                className="field"
+                id="sign-in-totp"
+                value={totpCode}
+                onChange={(event) => setTotpCode(event.target.value)}
+                inputMode="numeric"
+                placeholder="123456"
+              />
+            </div>
+          ) : null}
 
-          <button className="btn btn-primary" type="submit" disabled={loadingPassword || loadingPasskey}>
+          <button className="btn btn-primary mx-auto block w-fit" type="submit" disabled={loadingPassword || loadingPasskey || loadingOidc}>
             {loadingPassword ? "Signing In..." : "Login With Password"}
           </button>
         </form>
 
         <div className="my-4 border-t border-slate-200" />
 
-        <button
-          className="btn btn-secondary w-full"
-          type="button"
-          onClick={() => void onPasswordlessPasskeyLogin()}
-          disabled={loadingPasskey || loadingPassword || Boolean(status?.setupRequired)}
-        >
-          {loadingPasskey ? "Waiting For Passkey..." : "Sign In With Passkey (Passwordless)"}
-        </button>
+        <div className="space-y-2">
+          {status?.oidcConfigured ? (
+            <button
+              className="btn btn-secondary w-full"
+              type="button"
+              onClick={() => void onOidcLogin()}
+              disabled={loadingPasskey || loadingPassword || loadingOidc || Boolean(status?.setupRequired)}
+            >
+              {loadingOidc ? "Redirecting To SSO..." : "Sign In With SSO"}
+            </button>
+          ) : null}
+
+          <button
+            className="btn btn-secondary w-full"
+            type="button"
+            onClick={() => void onPasswordlessPasskeyLogin()}
+            disabled={loadingPasskey || loadingPassword || loadingOidc || Boolean(status?.setupRequired)}
+          >
+            {loadingPasskey ? "Waiting For Passkey..." : "Sign In With Passkey (Passwordless)"}
+          </button>
+        </div>
 
         {error ? <p className="error mt-4">{error}</p> : null}
       </article>

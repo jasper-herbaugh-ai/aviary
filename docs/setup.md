@@ -24,7 +24,15 @@
    - If no users exist, open `http://localhost:3000/setup` to create the first admin
    - The setup page auto-detects and stores WebAuthn (`rpId`, `rpName`, `origin`) and TOTP issuer defaults in `app_config`
    - Then sign in at `http://localhost:3000/sign-in`
-   - Optional TOTP MFA and WebAuthn passkeys can be enabled from `Automation Settings -> Security` in the web UI
+   - Optional TOTP MFA, WebAuthn passkeys, and OIDC SSO can be configured from `Automation Settings -> Security` in the web UI
+
+## OIDC redirect URI defaults
+
+When `OIDC_REDIRECT_URI` is not set in DB/env, the API derives a default callback URI from `AVIARY_DOMAIN`:
+- Development (`NODE_ENV=development`): `http://<AVIARY_DOMAIN>/api/v1/auth/oidc/callback`
+- Non-development: `https://<AVIARY_DOMAIN>/api/v1/auth/oidc/callback`
+
+You can still set `OIDC_REDIRECT_URI` (or the redirect override in UI) to force an explicit value.
 
 ## WebAuthn configuration
 

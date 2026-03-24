@@ -199,6 +199,20 @@ Monorepo for an agent-less SSH orchestration platform:
 - `packages/types`: shared DTOs and validation schemas
 - `packages/playbooks`: built-in playbook manifests
 
+#### Versioning
+
+Version is stored in the repository root `VERSION` file.
+
+Use this flow before releasing or when versions drift:
+
+- Update `VERSION` to the desired value.
+- Run `bun run sync-version` to propagate it to all `package.json` files.
+- Run `bun run check-version` to verify everything is in sync.
+
+CI also runs this check (`version-sync-check`) so merge requests fail fast if versions mismatch.
+
+For detailed instructions, see [`docs/versioning.md`](docs/versioning.md).
+
 #### Quick start
 
 1. Install deps: `bun install`

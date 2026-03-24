@@ -12,6 +12,7 @@ const envSchema = z.object({
   OIDC_CLIENT_ID: z.string().optional(),
   OIDC_CLIENT_SECRET: z.string().optional(),
   OIDC_REDIRECT_URI: z.string().optional(),
+  AVIARY_DOMAIN: z.string().optional(),
   LOCAL_BOOTSTRAP_ADMIN: z.string().default("true"),
   LOCAL_BOOTSTRAP_ADMIN_EMAIL: z.string().email().default("admin@example.com"),
   LOCAL_BOOTSTRAP_ADMIN_PASSWORD: z.string().min(8).default("change-me"),
