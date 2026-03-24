@@ -706,6 +706,26 @@ h6 {
   padding: 1rem;
 }
 
+.passkey-card {
+  border: 1px solid var(--line);
+  border-radius: 0.72rem;
+  background: var(--bg-soft);
+  padding: 0.75rem;
+}
+
+.passkey-card-title {
+  color: var(--brand-strong);
+  overflow-wrap: anywhere;
+}
+
+.passkey-card-meta {
+  color: var(--fg-main);
+}
+
+.passkey-card-submeta {
+  color: var(--fg-muted);
+}
+
 .notice {
   border-radius: 0.65rem;
   border: 1px solid #ffdba6;

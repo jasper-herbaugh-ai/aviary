@@ -144,6 +144,18 @@ function normalizeOrigin(origin: string): string | undefined {
   }
 }
 
+function deriveOidcRedirectUriFromDomain(domain?: string): string | null {
+  if (!domain?.trim()) return null;
+
+  const trimmed = domain.trim();
+  const scheme = env.NODE_ENV === "development" ? "http" : "https";
+  const originCandidate = /^https?:\/\//i.test(trimmed) ? trimmed : `${scheme}://${trimmed}`;
+  const origin = normalizeOrigin(originCandidate);
+  if (!origin) return null;
+
+  return new URL("/api/v1/auth/oidc/callback", `${origin}/`).toString();
+}
+
 function inferOriginFromHeaders(headers: WebAuthnHeaderShape): string | undefined {
   const directOrigin = firstHeaderValue(headers.origin);
   const normalizedDirectOrigin = directOrigin ? normalizeOrigin(directOrigin) : undefined;
@@ -375,11 +387,14 @@ export async function buildServer() {
         }
       }));
 
+    const configuredRedirectUri = appConfig?.oidcRedirectUri?.trim() || env.OIDC_REDIRECT_URI || null;
+    const derivedRedirectUri = deriveOidcRedirectUriFromDomain(env.AVIARY_DOMAIN);
+
     return {
       oidcIssuerUrl: appConfig?.oidcIssuerUrl?.trim() || env.OIDC_ISSUER_URL || null,
       oidcClientId: appConfig?.oidcClientId?.trim() || env.OIDC_CLIENT_ID || null,
       oidcClientSecret: appConfig?.oidcClientSecret?.trim() || env.OIDC_CLIENT_SECRET || null,
-      oidcRedirectUri: appConfig?.oidcRedirectUri?.trim() || env.OIDC_REDIRECT_URI || null
+      oidcRedirectUri: configuredRedirectUri ?? derivedRedirectUri
     };
   }
 
@@ -404,11 +419,13 @@ export async function buildServer() {
       }
     });
     const defaults = await resolveWebAuthnConfigOptional(request.headers, config);
+    const oidc = await resolveOidcRuntimeConfig();
     return {
       localBootstrapEnabled: env.localBootstrapEnabled,
       hasUsers: userCount > 0,
       setupRequired: env.localBootstrapEnabled && userCount === 0,
       bootstrapAdminEmail: env.LOCAL_BOOTSTRAP_ADMIN_EMAIL,
+      oidcConfigured: Boolean(oidc.oidcIssuerUrl && oidc.oidcClientId && oidc.oidcRedirectUri),
       setupDefaults: {
         webauthnRpId: defaults.rpId ?? null,
         webauthnRpName: defaults.rpName,

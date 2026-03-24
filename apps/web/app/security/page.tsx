@@ -295,6 +295,19 @@ export default function SecurityPage() {
     }
   }
 
+  async function copyEffectiveOidcRedirectUri() {
+    const effectiveRedirectUri = oidcSettings?.effective.redirectUri;
+    if (!effectiveRedirectUri) return;
+
+    try {
+      await navigator.clipboard.writeText(effectiveRedirectUri);
+      setMessage("Effective OIDC redirect URI copied.");
+      setError(null);
+    } catch {
+      setError("Unable to copy redirect URI. Please copy it manually.");
+    }
+  }
+
   return (
     <Shell
       title="Security"
@@ -334,7 +347,8 @@ export default function SecurityPage() {
       <article className="panel p-4">
         <h2 className="m-0 text-lg font-semibold">OIDC SSO Configuration</h2>
         <p className="mb-4 mt-2 text-sm text-slate-600">
-          Configure OIDC values saved in Aviary&apos;s database. These settings are used for OIDC login and callback URL generation.
+          Configure OIDC values saved in Aviary&apos;s database. Redirect URI is optional and defaults from
+          <code> AVIARY_DOMAIN</code> when not explicitly set.
         </p>
 
         <form className="space-y-3" onSubmit={(event) => void saveOidcSettings(event)}>
@@ -361,14 +375,36 @@ export default function SecurityPage() {
           </div>
 
           <div className="field-wrap">
-            <label htmlFor="oidc-redirect-uri">Redirect URI</label>
+            <label htmlFor="oidc-effective-redirect-uri">Effective Redirect URI (copy into your OIDC app)</label>
+            <div className="actions">
+              <input
+                className="field flex-1"
+                id="oidc-effective-redirect-uri"
+                value={oidcSettings?.effective.redirectUri ?? ""}
+                readOnly
+                placeholder="Configure AVIARY_DOMAIN or set a redirect URI override below"
+              />
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={() => void copyEffectiveOidcRedirectUri()}
+                disabled={saving || !oidcSettings?.effective.redirectUri}
+              >
+                Copy
+              </button>
+            </div>
+          </div>
+
+          <div className="field-wrap">
+            <label htmlFor="oidc-redirect-uri">Redirect URI Override (optional)</label>
             <input
               className="field"
               id="oidc-redirect-uri"
               value={oidcRedirectUri}
               onChange={(event) => setOidcRedirectUri(event.target.value)}
-              placeholder="https://aviary.example.com/api/v1/auth/oidc/callback"
+              placeholder={oidcSettings?.effective.redirectUri ?? "https://aviary.example.com/api/v1/auth/oidc/callback"}
             />
+            <p className="m-0 mt-1 text-xs text-muted">Leave blank to use the derived effective redirect URI.</p>
           </div>
 
           <div className="field-wrap">
@@ -423,17 +459,17 @@ export default function SecurityPage() {
         ) : (
           <div className="space-y-2">
             {passkeys.map((passkey) => (
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3" key={passkey.id}>
+              <div className="passkey-card" key={passkey.id}>
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="m-0 text-sm font-semibold">Credential {passkey.credentialId.slice(0, 12)}...</p>
+                  <p className="m-0 text-sm font-semibold passkey-card-title">Credential {passkey.credentialId.slice(0, 12)}...</p>
                   <button className="btn btn-danger" type="button" onClick={() => void deletePasskey(passkey.id)} disabled={saving}>
                     Remove
                   </button>
                 </div>
-                <p className="m-0 mt-1 text-xs text-slate-600">
+                <p className="m-0 mt-1 text-xs passkey-card-meta">
                   Device: {passkey.deviceType ?? "unknown"} | Backed up: {passkey.backedUp ? "yes" : "no"}
                 </p>
-                <p className="m-0 mt-1 text-xs text-slate-500">
+                <p className="m-0 mt-1 text-xs passkey-card-submeta">
                   Created {formatDateTime(passkey.createdAt)} | Last used {formatDateTime(passkey.lastUsedAt)}
                 </p>
               </div>

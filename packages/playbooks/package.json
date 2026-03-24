@@ -1,14 +1,14 @@
 {
   "name": "@aviary/playbooks",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "build": "node -e \"console.log('playbooks are static assets')\"",
-    "dev": "node -e \"console.log('playbooks package has no dev step')\"",
-    "lint": "node -e \"console.log('no lint step')\"",
-    "typecheck": "node -e \"console.log('no typecheck step')\"",
-    "test": "node -e \"console.log('no tests in static package')\""
+    "build": "bun -e \"console.log('playbooks are static assets')\"",
+    "dev": "bun -e \"console.log('playbooks package has no dev step')\"",
+    "lint": "bun -e \"console.log('no lint step')\"",
+    "typecheck": "bun -e \"console.log('no typecheck step')\"",
+    "test": "bun -e \"console.log('no tests in static package')\""
   }
 }
