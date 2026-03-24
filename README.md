@@ -2,15 +2,16 @@
  
 *Agent-less Linux server management. No daemons. No plugins. Just SSH.*
  
-**Website:** [getaviary.app](https://getaviary.app)
-**GitHub:** [github.com/robertherbaugh/aviary](https://github.com/robertherbaugh/aviary)
-**CLI:** `wren`
+- **Website:** [getaviary.app](https://getaviary.app)
+- **GitHub:** [github.com/robertherbaugh/aviary](https://github.com/robertherbaugh/aviary)
 
 ## What is Aviary?
  
-Aviary is an open-source, agent-less Linux server management platform built for MSPs and homelabs. It handles scheduled patch management, health monitoring, storage visibility, playbook execution, and alerting — all over SSH with zero footprint on managed hosts.
+Aviary is an open-source, agent-less Linux server management platform built for simplicity and power users. It handles scheduled patch management, health monitoring, storage visibility, playbook execution, and alerting — all over SSH with zero footprint on managed hosts. Designed for homelabs and business uers alike.
  
 No agents. No plugins. No daemons. If your server speaks SSH, Aviary can manage it.
+
+![Aviary Dashboard](docs/images/dashboard.jpg)
  
 > *"Aviary is an agent-less Linux server management platform. Merlin handles the API, Swift workers execute over SSH, Cuckoo drives the scheduler, and Kestrel watches for alerts. Manage it all from Perch, or drop into the Wren CLI."*
  
