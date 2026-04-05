@@ -2082,7 +2082,11 @@ export async function buildServer() {
 
   app.post("/api/v1/alerts/:id/acknowledge", async (request) => {
     const params = request.params as { id: string };
-    const body = request.body as { notificationId: string };
+    const body = request.body as { notificationId?: string } | null;
+
+    if (!body?.notificationId) {
+      throw app.httpErrors.notFound("Notification not found");
+    }
 
     const notification = await db.notification.findFirst({
       where: {
