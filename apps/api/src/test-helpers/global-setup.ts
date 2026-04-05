@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 
@@ -20,15 +20,14 @@ export async function setup() {
   process.env.API_GRPC_PORT = "50099";
   process.env.INTERNAL_API_TOKEN = "test-internal-token";
 
-  // Resolve schema path relative to this file: apps/api/src/test-helpers/global-setup.ts
-  // -> packages/db/prisma/schema.prisma
-  const __dirname = fileURLToPath(new URL(".", import.meta.url));
-  const schemaPath = resolve(__dirname, "../../../../packages/db/prisma/schema.prisma");
+  // Run migrations from packages/db where prisma.config.ts lives.
+  // prisma.config.ts reads DATABASE_URL from env (dotenv won't override it).
+  const __filename = fileURLToPath(import.meta.url);
+  const dbPackageDir = resolve(dirname(__filename), "../../../../packages/db");
 
-  // The schema datasource has no url field (uses driver adapter in code),
-  // so pass the URL explicitly via --url to the CLI.
-  execSync(`bunx prisma migrate deploy --schema "${schemaPath}" --url "${dbUrl}"`, {
-    cwd: process.cwd(),
+  execSync("bunx prisma migrate deploy", {
+    cwd: dbPackageDir,
+    env: { ...process.env, DATABASE_URL: dbUrl },
     stdio: "pipe"
   });
 }
