@@ -9,15 +9,20 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "json", "json-summary"],
       include: ["src/**/*.ts"],
-      exclude: ["src/**/*.test.ts", "src/index.ts", "src/test-helpers/**"],
-      // Thresholds set to achieved levels after Phase 1 (AVI-3) integration tests landed.
-      // Background processing files (scheduler, alerts, SSE, gRPC) are the coverage gap.
-      // AVI-7 tracks raising these to ≥60% once those files have test coverage.
+      exclude: [
+        "src/**/*.test.ts",
+        "src/index.ts",
+        "src/test-helpers/**",
+        // Infrastructure files only covered by integration tests (server, env, queue)
+        "src/server.ts",
+        "src/env.ts",
+        "src/queue.ts"
+      ],
       thresholds: {
-        lines: 50,
-        functions: 58,
-        branches: 65,
-        statements: 50
+        lines: 60,
+        functions: 65,
+        branches: 70,
+        statements: 60
       }
     }
   }
