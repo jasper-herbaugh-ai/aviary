@@ -45,7 +45,7 @@ Aviary is built as a distributed microservices platform from day one. Each servi
                        │ HTTPS / REST / WebSocket
 ┌──────────────────────▼──────────────────────────────┐
 │                     Merlin                          │
-│                  NestJS API Server                  │
+│                 Fastify 5 API Server                 │
 │  - Auth / OIDC (Arctic + Authentik)                 │
 │  - Inventory & credential management (Magpie)       │
 │  - Playbook management (Finch)                      │
@@ -100,7 +100,7 @@ The core application server. Owns all business logic, data access, and job orche
 - Serving job history and run logs to Perch
 - Audit/event logging (Raven)
  
-**Tech:** NestJS, TypeScript, Prisma ORM, pgBoss, Arctic, PostgreSQL
+**Tech:** Fastify 5, TypeScript, Prisma ORM, pgBoss, Arctic, PostgreSQL
  
 ### Swift — Python SSH Worker
  
@@ -128,7 +128,7 @@ Not a standalone service — Cuckoo is the scheduling layer embedded within Merl
 - Retry failed jobs within configured policy
 - Prevent duplicate job enqueuing for the same schedule
  
-**Tech:** pgBoss, PostgreSQL, NestJS scheduler module
+**Tech:** pgBoss, PostgreSQL, cron-parser (embedded in Merlin/Fastify)
  
 ### Kestrel — Alert Engine
  
