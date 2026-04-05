@@ -1,16 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("@aviary/db", () => {
-  class PrismaClientKnownRequestError extends Error {
+const { MockPrismaError } = vi.hoisted(() => {
+  class MockPrismaError extends Error {
     code: string;
-    constructor(message: string, meta: { code: string }) {
+    clientVersion: string;
+    constructor(message: string, meta: { code: string; clientVersion?: string }) {
       super(message);
       this.name = "PrismaClientKnownRequestError";
       this.code = meta.code;
+      this.clientVersion = meta.clientVersion ?? "5.0.0";
     }
   }
+  return { MockPrismaError };
+});
+
+vi.mock("@aviary/db", () => {
   return {
-    Prisma: { PrismaClientKnownRequestError },
+    Prisma: { PrismaClientKnownRequestError: MockPrismaError },
     PrismaClient: vi.fn(),
   };
 });
@@ -245,12 +251,9 @@ describe("appendJobEvent", () => {
   });
 
   it("returns the existing event on P2002 unique-constraint violation", async () => {
-    const { Prisma } = await import("@aviary/db");
     const now = new Date();
     const existing = { jobId: "j1", seq: 1, eventType: "log", payload: {}, emittedAt: now };
-    const dup = new Prisma.PrismaClientKnownRequestError("Unique constraint", {
-      code: "P2002",
-    });
+    const dup = new MockPrismaError("Unique constraint", { code: "P2002" });
 
     const db = {
       jobEvent: {
@@ -306,8 +309,8 @@ describe("listJobEventsAfter", () => {
     const result = await listJobEventsAfter(db, { jobId: "j1", afterSeq: 1 });
 
     expect(result).toHaveLength(2);
-    expect(result[0].seq).toBe(2);
-    expect(result[1].seq).toBe(3);
+    expect(result.at(0)?.seq).toBe(2);
+    expect(result.at(1)?.seq).toBe(3);
     expect(db.jobEvent.findMany).toHaveBeenCalledWith({
       where: { jobId: "j1", seq: { gt: 1 } },
       orderBy: { seq: "asc" },

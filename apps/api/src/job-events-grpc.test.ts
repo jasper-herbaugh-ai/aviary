@@ -114,7 +114,7 @@ function makeOptions(overrides: Partial<Parameters<typeof startJobEventGrpcServe
 function getCapturedHandler(): (call: MockCall, callback: GrpcCallback) => void {
   const addServiceCalls = mockServer.addService.mock.calls;
   expect(addServiceCalls).toHaveLength(1);
-  const impl = addServiceCalls[0][1] as Record<string, unknown>;
+  const impl = addServiceCalls.at(0)![1] as Record<string, unknown>;
   return impl.publishEvents as (call: MockCall, cb: GrpcCallback) => void;
 }
 

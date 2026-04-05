@@ -106,7 +106,7 @@ describe("startScheduler", () => {
     await vi.advanceTimersByTimeAsync(15_000);
 
     expect(prisma.schedule.update).toHaveBeenCalledOnce();
-    const updateCall = (prisma.schedule.update as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+    const updateCall = (prisma.schedule.update as ReturnType<typeof vi.fn>).mock.calls.at(0)![0] as {
       data: { lastRunAt: Date; nextRunAt: Date };
     };
     expect(updateCall.data.lastRunAt).toBeInstanceOf(Date);
