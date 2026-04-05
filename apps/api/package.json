@@ -12,7 +12,9 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:integration:coverage": "vitest run --config vitest.integration.config.ts --coverage"
   },
   "dependencies": {
     "@aviary/db": "workspace:*",
@@ -31,7 +33,9 @@
     "zod": "^4.1.8"
   },
   "devDependencies": {
+    "@testcontainers/postgresql": "^10.24.2",
     "@vitest/coverage-v8": "^3.2.4",
+    "testcontainers": "^10.24.2",
     "tsx": "^4.20.5",
     "vitest": "^3.2.4"
   }
