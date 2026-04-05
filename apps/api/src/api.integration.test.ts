@@ -655,16 +655,15 @@ describe("Alerts CRUD", () => {
       headers: authHeaders(),
       payload: {
         serverId: serverForAlert,
-        metric: "disk_usage",
+        metric: "disk_percent",
         operator: "gt",
         threshold: 85,
-        severity: "warning",
-        message: "Disk usage above 85%"
+        severity: "warning"
       }
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.metric).toBe("disk_usage");
+    expect(body.metric).toBe("disk_percent");
     alertId = body.id;
   });
 
