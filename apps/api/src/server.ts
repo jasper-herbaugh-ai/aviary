@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
 import sensible from "@fastify/sensible";
 import { CronExpressionParser } from "cron-parser";
 import {
@@ -274,6 +275,9 @@ export async function buildServer() {
     allowedHeaders: ["Authorization", "Content-Type", "Last-Event-ID"]
   });
   await app.register(sensible);
+  await app.register(rateLimit, {
+    global: false
+  });
 
   app.addHook("preHandler", async (request, reply) => {
     const routeUrl = request.routeOptions.url;
@@ -511,7 +515,7 @@ export async function buildServer() {
     return { token };
   });
 
-  app.post("/api/v1/auth/local/bootstrap-login", async (request) => {
+  app.post("/api/v1/auth/local/bootstrap-login", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request) => {
     if (!env.localBootstrapEnabled) {
       throw app.httpErrors.forbidden("Bootstrap admin is disabled");
     }
@@ -687,7 +691,7 @@ export async function buildServer() {
     return { token };
   });
 
-  app.post("/api/v1/auth/oidc/login", async () => {
+  app.post("/api/v1/auth/oidc/login", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async () => {
     const oidc = await resolveOidcRuntimeConfig();
     if (!oidc.oidcIssuerUrl || !oidc.oidcClientId || !oidc.oidcRedirectUri) {
       throw app.httpErrors.badRequest("OIDC configuration is incomplete");
@@ -1160,7 +1164,7 @@ export async function buildServer() {
     return { ok: true };
   });
 
-  app.post("/api/v1/auth/webauthn/authenticate/options", async (request) => {
+  app.post("/api/v1/auth/webauthn/authenticate/options", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (request) => {
     const body = request.body as { email?: string } | undefined;
 
     let challengeUserId: string | undefined;
@@ -1220,7 +1224,7 @@ export async function buildServer() {
     };
   });
 
-  app.post("/api/v1/auth/webauthn/authenticate/verify", async (request) => {
+  app.post("/api/v1/auth/webauthn/authenticate/verify", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request) => {
     const body = request.body as {
       challengeId?: string;
       response?: AuthenticationResponseJSON;
@@ -1346,7 +1350,7 @@ export async function buildServer() {
     };
   });
 
-  app.post("/api/v1/auth/mfa/totp/verify", async (request) => {
+  app.post("/api/v1/auth/mfa/totp/verify", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request) => {
     const userId = request.user?.id;
     if (!userId) {
       throw app.httpErrors.unauthorized("No active session");

@@ -12,11 +12,12 @@
     },
     "apps/api": {
       "name": "@aviary/api",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@aviary/db": "workspace:*",
         "@aviary/types": "workspace:*",
         "@fastify/cors": "^11.1.0",
+        "@fastify/rate-limit": "^10.3.0",
         "@fastify/sensible": "^6.0.3",
         "@grpc/grpc-js": "^1.14.1",
         "@grpc/proto-loader": "^0.8.0",
@@ -35,7 +36,7 @@
     },
     "apps/web": {
       "name": "@aviary/web",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@simplewebauthn/browser": "^13.3.0",
         "next": "^15.5.0",
@@ -57,7 +58,7 @@
     },
     "packages/db": {
       "name": "@aviary/db",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@prisma/adapter-pg": "^7.5.0",
         "@prisma/client": "^7.5.0",
@@ -71,11 +72,11 @@
     },
     "packages/playbooks": {
       "name": "@aviary/playbooks",
-      "version": "0.1.0",
+      "version": "0.1.1",
     },
     "packages/types": {
       "name": "@aviary/types",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "zod": "^4.1.8",
       },
@@ -178,6 +179,8 @@
     "@fastify/merge-json-schemas": ["@fastify/merge-json-schemas@0.2.1", "", { "dependencies": { "dequal": "^2.0.3" } }, "sha512-OA3KGBCy6KtIvLf8DINC5880o5iBlDX4SxzLQS8HorJAbqluzLRn80UXU0bxZn7UOFhFgpRJDasfwn9nG4FG4A=="],
 
     "@fastify/proxy-addr": ["@fastify/proxy-addr@5.1.0", "", { "dependencies": { "@fastify/forwarded": "^3.0.0", "ipaddr.js": "^2.1.0" } }, "sha512-INS+6gh91cLUjB+PVHfu1UqcB76Sqtpyp7bnL+FYojhjygvOPA9ctiD/JDKsyD9Xgu4hUhCSJBPig/w7duNajw=="],
+
+    "@fastify/rate-limit": ["@fastify/rate-limit@10.3.0", "", { "dependencies": { "@lukeed/ms": "^2.0.2", "fastify-plugin": "^5.0.0", "toad-cache": "^3.7.0" } }, "sha512-eIGkG9XKQs0nyynatApA3EVrojHOuq4l6fhB4eeCk4PIOeadvOJz9/4w3vGI44Go17uaXOWEcPkaD8kuKm7g6Q=="],
 
     "@fastify/sensible": ["@fastify/sensible@6.0.4", "", { "dependencies": { "@lukeed/ms": "^2.0.2", "dequal": "^2.0.3", "fastify-plugin": "^5.0.0", "forwarded": "^0.2.0", "http-errors": "^2.0.0", "type-is": "^2.0.1", "vary": "^1.1.2" } }, "sha512-1vxcCUlPMew6WroK8fq+LVOwbsLtX+lmuRuqpcp6eYqu6vmkLwbKTdBWAZwbeaSgCfW4tzUpTIHLLvTiQQ1BwQ=="],
 
