@@ -25,9 +25,10 @@ export async function setup() {
   const __dirname = fileURLToPath(new URL(".", import.meta.url));
   const schemaPath = resolve(__dirname, "../../../../packages/db/prisma/schema.prisma");
 
-  execSync(`bunx prisma migrate deploy --schema "${schemaPath}"`, {
+  // The schema datasource has no url field (uses driver adapter in code),
+  // so pass the URL explicitly via --url to the CLI.
+  execSync(`bunx prisma migrate deploy --schema "${schemaPath}" --url "${dbUrl}"`, {
     cwd: process.cwd(),
-    env: { ...process.env, DATABASE_URL: dbUrl },
     stdio: "pipe"
   });
 }
