@@ -48,7 +48,6 @@ jobs:
         uses: davelosert/vitest-coverage-report-action@v2
         if: always()
         with:
-          working-directory: apps/api
           json-summary-path: apps/api/coverage/coverage-summary.json
           json-final-path: apps/api/coverage/coverage-final.json
       - run: cd apps/worker && uv sync --frozen && uv run pytest -q

@@ -1,4 +1,6 @@
 import { execSync } from "node:child_process";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 
 let container: Awaited<ReturnType<PostgreSqlContainer["start"]>>;
@@ -18,7 +20,12 @@ export async function setup() {
   process.env.API_GRPC_PORT = "50099";
   process.env.INTERNAL_API_TOKEN = "test-internal-token";
 
-  execSync("bunx prisma migrate deploy", {
+  // Resolve schema path relative to this file: apps/api/src/test-helpers/global-setup.ts
+  // -> packages/db/prisma/schema.prisma
+  const __dirname = fileURLToPath(new URL(".", import.meta.url));
+  const schemaPath = resolve(__dirname, "../../../../packages/db/prisma/schema.prisma");
+
+  execSync(`bunx prisma migrate deploy --schema "${schemaPath}"`, {
     cwd: process.cwd(),
     env: { ...process.env, DATABASE_URL: dbUrl },
     stdio: "pipe"
