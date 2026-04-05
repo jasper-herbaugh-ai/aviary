@@ -34,8 +34,10 @@ jobs:
       - run: bun run db:generate
       - run: bun run lint
       - run: bun run typecheck
-      - name: Run API tests with coverage
-        run: bun --filter=@aviary/api run test:coverage
+      - name: Run unit tests (all packages)
+        run: bun run test
+      - name: Run API integration tests with coverage (testcontainers)
+        run: bun --filter=@aviary/api run test:integration:coverage
       - name: Upload API coverage report
         uses: actions/upload-artifact@v4
         if: always()
@@ -46,7 +48,6 @@ jobs:
         uses: davelosert/vitest-coverage-report-action@v2
         if: always()
         with:
-          working-directory: apps/api
           json-summary-path: apps/api/coverage/coverage-summary.json
           json-final-path: apps/api/coverage/coverage-final.json
       - run: cd apps/worker && uv sync --frozen && uv run pytest -q

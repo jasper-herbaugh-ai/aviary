@@ -296,7 +296,12 @@ export async function buildServer() {
     }
 
     const token = authorization.slice("Bearer ".length);
-    const claims = await verifySessionToken(env.JWT_SECRET, token);
+    let claims: Awaited<ReturnType<typeof verifySessionToken>>;
+    try {
+      claims = await verifySessionToken(env.JWT_SECRET, token);
+    } catch {
+      throw app.httpErrors.unauthorized("Invalid token");
+    }
 
     const session = await db.session.findUnique({ where: { id: claims.sid } });
     if (!session || session.tokenHash !== sha256(token) || session.expiresAt < new Date()) {
@@ -2077,7 +2082,11 @@ export async function buildServer() {
 
   app.post("/api/v1/alerts/:id/acknowledge", async (request) => {
     const params = request.params as { id: string };
-    const body = request.body as { notificationId: string };
+    const body = request.body as { notificationId?: string } | null;
+
+    if (!body?.notificationId) {
+      throw app.httpErrors.notFound("Notification not found");
+    }
 
     const notification = await db.notification.findFirst({
       where: {
