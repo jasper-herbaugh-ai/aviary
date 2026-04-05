@@ -12,12 +12,13 @@ export default defineConfig({
       reporter: ["text", "json", "json-summary"],
       include: ["src/**/*.ts"],
       exclude: ["src/**/*.test.ts", "src/index.ts", "src/test-helpers/**"],
-      // Raise to 60 once full test suite is in place (AVI-7 complete).
+      // Thresholds set to achieved levels after Phase 1 (AVI-3) integration tests landed.
+      // AVI-7 tracks raising these to ≥60% once background processing files have coverage.
       thresholds: {
-        lines: 0,
-        functions: 0,
-        branches: 0,
-        statements: 0
+        lines: 50,
+        functions: 58,
+        branches: 65,
+        statements: 50
       }
     }
   }
