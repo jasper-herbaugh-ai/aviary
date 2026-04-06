@@ -41,6 +41,7 @@ import { decryptSecret, encryptSecret, getKey, sha256 } from "./crypto.js";
 import { signSessionToken, verifySessionToken } from "./auth.js";
 import { evaluateAlertsForMetrics } from "./alerts.js";
 import { createQueueClient, PLAYBOOK_QUEUE } from "./queue.js";
+import { enqueueCredentialRotation, nextRotationDate } from "./credentials.js";
 import { startScheduler } from "./scheduler.js";
 import { buildTotpOtpauthUrl, generateTotpSecret, verifyTotpCode } from "./totp.js";
 import { SERVER_WITH_CREDENTIAL_INCLUDE, toSafeServer } from "./servers.js";
@@ -286,7 +287,7 @@ export async function buildServer() {
     }
 
     const key = `${request.method}:${routeUrl}`;
-    if (!routeUrl.startsWith("/api/v1") || PUBLIC_ROUTES.has(key)) {
+    if (!routeUrl.startsWith("/api/v1") || routeUrl.startsWith("/api/v1/internal/") || PUBLIC_ROUTES.has(key)) {
       return;
     }
 
@@ -1534,6 +1535,126 @@ export async function buildServer() {
   app.delete("/api/v1/credentials/:id", async (request) => {
     const params = request.params as { id: string };
     await db.credential.delete({ where: { id: params.id } });
+    return { ok: true };
+  });
+
+  // POST /api/v1/credentials/:id/rotate — trigger manual credential rotation
+  app.post("/api/v1/credentials/:id/rotate", async (request, reply) => {
+    const params = request.params as { id: string };
+    const body = request.body as { rotationIntervalDays?: number } | undefined;
+
+    const credential = await db.credential.findUnique({ where: { id: params.id } });
+    if (!credential) return reply.notFound("Credential not found");
+
+    if (credential.type !== "ssh_key") {
+      return reply.badRequest("Rotation is only supported for ssh_key credentials");
+    }
+
+    // Optionally update the rotation schedule at the same time
+    if (body && typeof body.rotationIntervalDays === "number") {
+      await db.credential.update({
+        where: { id: params.id },
+        data: {
+          rotationIntervalDays: body.rotationIntervalDays,
+          nextRotationAt: nextRotationDate(body.rotationIntervalDays)
+        }
+      });
+    }
+
+    const history = await enqueueCredentialRotation(db, queue, ENC_KEY, params.id, "manual");
+    return reply.code(202).send(history);
+  });
+
+  // GET /api/v1/credentials/:id/rotation-history — list rotation events
+  app.get("/api/v1/credentials/:id/rotation-history", async (request, reply) => {
+    const params = request.params as { id: string };
+    const query = request.query as { limit?: string; offset?: string };
+
+    const credential = await db.credential.findUnique({ where: { id: params.id } });
+    if (!credential) return reply.notFound("Credential not found");
+
+    const limit = Math.min(parseInt(query.limit ?? "50", 10) || 50, 200);
+    const offset = parseInt(query.offset ?? "0", 10) || 0;
+
+    const rows = await db.rotationHistory.findMany({
+      where: { credentialId: params.id },
+      orderBy: { startedAt: "desc" },
+      take: limit,
+      skip: offset
+    });
+
+    return rows;
+  });
+
+  // PATCH /api/v1/credentials/:id/rotation-schedule — configure automatic rotation
+  app.patch("/api/v1/credentials/:id/rotation-schedule", async (request, reply) => {
+    const params = request.params as { id: string };
+    const body = request.body as { rotationIntervalDays: number | null };
+
+    const credential = await db.credential.findUnique({ where: { id: params.id } });
+    if (!credential) return reply.notFound("Credential not found");
+
+    const intervalDays = body.rotationIntervalDays;
+    const updated = await db.credential.update({
+      where: { id: params.id },
+      data: {
+        rotationIntervalDays: intervalDays,
+        nextRotationAt: intervalDays != null ? nextRotationDate(intervalDays) : null
+      }
+    });
+
+    return {
+      id: updated.id,
+      rotationIntervalDays: updated.rotationIntervalDays,
+      nextRotationAt: updated.nextRotationAt
+    };
+  });
+
+  // POST /api/v1/internal/credentials/rotation/:rotationHistoryId/finalize
+  // Called by the worker to mark rotation complete and update credential
+  app.post("/api/v1/internal/credentials/rotation/:rotationHistoryId/finalize", async (request, reply) => {
+    const rawToken = (request.headers as Record<string, string>)["x-internal-token"];
+    if (!rawToken || rawToken !== env.INTERNAL_API_TOKEN) {
+      return reply.unauthorized("Invalid internal token");
+    }
+
+    const params = request.params as { rotationHistoryId: string };
+    const body = request.body as {
+      success: boolean;
+      encryptedNewPrivateKey?: string;
+      errorMessage?: string;
+    };
+
+    const history = await db.rotationHistory.findUnique({ where: { id: params.rotationHistoryId } });
+    if (!history) return reply.notFound("Rotation history not found");
+
+    if (body.success && body.encryptedNewPrivateKey) {
+      const cred = await db.credential.findUniqueOrThrow({ where: { id: history.credentialId } });
+      const newNextRotationAt = cred.rotationIntervalDays
+        ? nextRotationDate(cred.rotationIntervalDays)
+        : null;
+
+      await db.$transaction([
+        db.credential.update({
+          where: { id: history.credentialId },
+          data: {
+            encryptedValue: body.encryptedNewPrivateKey,
+            lastRotatedAt: new Date(),
+            ...(newNextRotationAt !== null ? { nextRotationAt: newNextRotationAt } : {})
+          }
+        }),
+        db.rotationHistory.update({
+          where: { id: history.id },
+          data: { status: "success", completedAt: new Date() }
+        })
+      ]);
+    } else {
+      await db.rotationHistory.update({
+        where: { id: history.id },
+        data: { status: "failed", completedAt: new Date(), errorMessage: body.errorMessage ?? "Unknown error" }
+      });
+    }
+
     return { ok: true };
   });
 
