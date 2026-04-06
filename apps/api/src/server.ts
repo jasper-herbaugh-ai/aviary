@@ -40,12 +40,18 @@ import { env } from "./env.js";
 import { decryptSecret, encryptSecret, getKey, sha256 } from "./crypto.js";
 import { signSessionToken, verifySessionToken } from "./auth.js";
 import { evaluateAlertsForMetrics } from "./alerts.js";
-import { createQueueClient, PLAYBOOK_QUEUE } from "./queue.js";
+import { createQueueClient, NOTIFICATION_DELIVERY_QUEUE, PLAYBOOK_QUEUE } from "./queue.js";
 import { enqueueCredentialRotation, nextRotationDate } from "./credentials.js";
 import { startScheduler } from "./scheduler.js";
 import { buildTotpOtpauthUrl, generateTotpSecret, verifyTotpCode } from "./totp.js";
 import { SERVER_WITH_CREDENTIAL_INCLUDE, toSafeServer } from "./servers.js";
 import { intervalToCron, wizardAutomationInputSchema } from "./wizard.js";
+import {
+  deliverNotification,
+  generateWebhookSecret,
+  toChannelView,
+  type SmtpConfig
+} from "./notification-channels.js";
 import { startJobEventGrpcServer } from "./job-events-grpc.js";
 import {
   JobEventBroker,
@@ -2298,7 +2304,150 @@ export async function buildServer() {
       throw app.httpErrors.notFound("job not found");
     }
 
-    await evaluateAlertsForMetrics(db, body.metrics);
+    await evaluateAlertsForMetrics(db, body.metrics, queue);
+    return { ok: true };
+  });
+
+  // ---------------------------------------------------------------------------
+  // Notification channels
+  // ---------------------------------------------------------------------------
+
+  const smtpConfig: SmtpConfig = {
+    host: env.SMTP_HOST ?? "localhost",
+    port: env.SMTP_PORT,
+    user: env.SMTP_USER ?? null,
+    pass: env.SMTP_PASS ?? null,
+    from: env.SMTP_FROM
+  };
+
+  // Start queue worker for notification delivery
+  await queue.work<{ channelId: string; notificationId: string | null; message: string; attempt: number }>(
+    NOTIFICATION_DELIVERY_QUEUE,
+    async (jobs) => {
+      for (const job of jobs) {
+        await deliverNotification(db, job.data, smtpConfig);
+      }
+    }
+  );
+
+  app.get("/api/v1/notification-channels", async () => {
+    const channels = await db.notificationChannel.findMany({
+      include: {
+        deliveries: {
+          orderBy: { sentAt: "desc" },
+          take: 20
+        }
+      },
+      orderBy: { createdAt: "asc" }
+    });
+
+    return channels.map((channel) => {
+      const last = channel.deliveries[0] ?? null;
+      return {
+        id: channel.id,
+        name: channel.name,
+        type: channel.type,
+        target: channel.target,
+        enabled: channel.enabled,
+        createdAt: channel.createdAt,
+        lastDeliveryAt: last?.sentAt ?? null,
+        lastDeliveryStatus: last?.status ?? null,
+        recentDeliveries: channel.deliveries.map((d) => ({
+          id: d.id,
+          status: d.status,
+          message: d.message,
+          sentAt: d.sentAt
+        }))
+      };
+    });
+  });
+
+  app.post("/api/v1/notification-channels", async (request) => {
+    const body = request.body as {
+      name: string;
+      type: "email" | "webhook" | "slack";
+      target: string;
+      enabled?: boolean;
+    };
+
+    if (!body.name?.trim()) {
+      throw app.httpErrors.badRequest("name is required");
+    }
+    if (!body.type || !["email", "webhook", "slack"].includes(body.type)) {
+      throw app.httpErrors.badRequest("type must be email, webhook, or slack");
+    }
+    if (!body.target?.trim()) {
+      throw app.httpErrors.badRequest("target is required");
+    }
+
+    const webhookSecret = body.type === "webhook" ? generateWebhookSecret() : null;
+
+    const channel = await db.notificationChannel.create({
+      data: {
+        name: body.name.trim(),
+        type: body.type,
+        target: body.target.trim(),
+        enabled: body.enabled ?? true,
+        webhookSecret
+      }
+    });
+
+    const view = await toChannelView(db, channel.id);
+    return view;
+  });
+
+  app.patch("/api/v1/notification-channels/:id", async (request) => {
+    const params = request.params as { id: string };
+    const body = request.body as {
+      name?: string;
+      target?: string;
+      enabled?: boolean;
+    };
+
+    const existing = await db.notificationChannel.findUnique({ where: { id: params.id } });
+    if (!existing) {
+      throw app.httpErrors.notFound("Notification channel not found");
+    }
+
+    await db.notificationChannel.update({
+      where: { id: params.id },
+      data: {
+        name: body.name?.trim() ?? existing.name,
+        target: body.target?.trim() ?? existing.target,
+        enabled: body.enabled ?? existing.enabled
+      }
+    });
+
+    const view = await toChannelView(db, params.id);
+    return view;
+  });
+
+  app.delete("/api/v1/notification-channels/:id", async (request) => {
+    const params = request.params as { id: string };
+    const existing = await db.notificationChannel.findUnique({ where: { id: params.id } });
+    if (!existing) {
+      throw app.httpErrors.notFound("Notification channel not found");
+    }
+    await db.notificationChannel.delete({ where: { id: params.id } });
+    return { ok: true };
+  });
+
+  app.post("/api/v1/notification-channels/:id/test", async (request) => {
+    const params = request.params as { id: string };
+    const channel = await db.notificationChannel.findUnique({ where: { id: params.id } });
+    if (!channel) {
+      throw app.httpErrors.notFound("Notification channel not found");
+    }
+    if (!channel.enabled) {
+      throw app.httpErrors.badRequest("Channel is disabled");
+    }
+
+    await queue.send(NOTIFICATION_DELIVERY_QUEUE, {
+      channelId: channel.id,
+      notificationId: null,
+      message: "Test notification from Aviary",
+      attempt: 1
+    });
     return { ok: true };
   });
 

@@ -54,6 +54,18 @@ enum AlertBackendType {
   webhook
 }
 
+enum NotificationChannelType {
+  email
+  webhook
+  slack
+}
+
+enum DeliveryStatus {
+  pending
+  success
+  failed
+}
+
 enum UserRole {
   admin
   operator
@@ -332,6 +344,40 @@ model WebAuthnChallenge {
   @@index([type, expiresAt])
   @@index([userId, type])
   @@map("webauthn_challenges")
+}
+
+model NotificationChannel {
+  id              String                  @id @default(uuid())
+  name            String
+  type            NotificationChannelType
+  target          String
+  enabled         Boolean                 @default(true)
+  retryCount      Int                     @default(3)  @map("retry_count")
+  retryBackoffSec Int                     @default(60) @map("retry_backoff_sec")
+  webhookSecret   String?                 @map("webhook_secret")
+  createdAt       DateTime                @default(now()) @map("created_at")
+  updatedAt       DateTime                @updatedAt      @map("updated_at")
+
+  deliveries      NotificationDelivery[]
+
+  @@map("notification_channels")
+}
+
+model NotificationDelivery {
+  id              String              @id @default(uuid())
+  channelId       String              @map("channel_id")
+  notificationId  String?             @map("notification_id")
+  status          DeliveryStatus      @default(pending)
+  message         String
+  errorMessage    String?             @map("error_message")
+  attempt         Int                 @default(1)
+  sentAt          DateTime            @default(now()) @map("sent_at")
+
+  channel         NotificationChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@index([channelId, sentAt])
+  @@index([status])
+  @@map("notification_deliveries")
 }
 
 model AppConfig {
