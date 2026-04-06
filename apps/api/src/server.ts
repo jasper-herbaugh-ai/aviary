@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
+import {
+  httpRequestDuration,
+  httpRequestsTotal,
+  jobQueueDepth,
+  registry
+} from "./metrics.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
 import sensible from "@fastify/sensible";
 import { CronExpressionParser } from "cron-parser";
 import {
@@ -39,11 +46,18 @@ import { env } from "./env.js";
 import { decryptSecret, encryptSecret, getKey, sha256 } from "./crypto.js";
 import { signSessionToken, verifySessionToken } from "./auth.js";
 import { evaluateAlertsForMetrics } from "./alerts.js";
-import { createQueueClient, PLAYBOOK_QUEUE } from "./queue.js";
+import { createQueueClient, CREDENTIAL_ROTATION_QUEUE, NOTIFICATION_DELIVERY_QUEUE, PLAYBOOK_QUEUE } from "./queue.js";
+import { enqueueCredentialRotation, nextRotationDate } from "./credentials.js";
 import { startScheduler } from "./scheduler.js";
 import { buildTotpOtpauthUrl, generateTotpSecret, verifyTotpCode } from "./totp.js";
 import { SERVER_WITH_CREDENTIAL_INCLUDE, toSafeServer } from "./servers.js";
 import { intervalToCron, wizardAutomationInputSchema } from "./wizard.js";
+import {
+  deliverNotification,
+  generateWebhookSecret,
+  toChannelView,
+  type SmtpConfig
+} from "./notification-channels.js";
 import { startJobEventGrpcServer } from "./job-events-grpc.js";
 import {
   JobEventBroker,
@@ -274,6 +288,9 @@ export async function buildServer() {
     allowedHeaders: ["Authorization", "Content-Type", "Last-Event-ID"]
   });
   await app.register(sensible);
+  await app.register(rateLimit, {
+    global: false
+  });
 
   app.addHook("preHandler", async (request, reply) => {
     const routeUrl = request.routeOptions.url;
@@ -282,7 +299,7 @@ export async function buildServer() {
     }
 
     const key = `${request.method}:${routeUrl}`;
-    if (!routeUrl.startsWith("/api/v1") || PUBLIC_ROUTES.has(key)) {
+    if (!routeUrl.startsWith("/api/v1") || routeUrl.startsWith("/api/v1/internal/") || PUBLIC_ROUTES.has(key)) {
       return;
     }
 
@@ -292,7 +309,12 @@ export async function buildServer() {
     }
 
     const token = authorization.slice("Bearer ".length);
-    const claims = await verifySessionToken(env.JWT_SECRET, token);
+    let claims: Awaited<ReturnType<typeof verifySessionToken>>;
+    try {
+      claims = await verifySessionToken(env.JWT_SECRET, token);
+    } catch {
+      throw app.httpErrors.unauthorized("Invalid token");
+    }
 
     const session = await db.session.findUnique({ where: { id: claims.sid } });
     if (!session || session.tokenHash !== sha256(token) || session.expiresAt < new Date()) {
@@ -407,6 +429,38 @@ export async function buildServer() {
 
   app.get("/health", async () => ({ ok: true }));
 
+  const TRACKED_QUEUES = [PLAYBOOK_QUEUE, CREDENTIAL_ROTATION_QUEUE, NOTIFICATION_DELIVERY_QUEUE];
+
+  // Prometheus metrics endpoint
+  app.get("/metrics", async (_request, reply) => {
+    // Refresh queue depth gauges before serving
+    try {
+      for (const name of TRACKED_QUEUES) {
+        const result = await queue.getQueue(name);
+        if (result) {
+          jobQueueDepth.set({ queue: name, state: "pending" }, result.queuedCount ?? 0);
+          jobQueueDepth.set({ queue: name, state: "active" }, result.activeCount ?? 0);
+        }
+      }
+    } catch {
+      // non-fatal — metrics still served with stale/zero values
+    }
+
+    const content = await registry.metrics();
+    return reply.header("Content-Type", registry.contentType).send(content);
+  });
+
+  // Track HTTP request duration and totals for all routes
+  app.addHook("onResponse", (request, reply, done) => {
+    const route = request.routeOptions?.url ?? "unknown";
+    const method = request.method;
+    const statusCode = String(reply.statusCode);
+    const durationSec = reply.elapsedTime / 1000;
+    httpRequestDuration.observe({ method, route, status_code: statusCode }, durationSec);
+    httpRequestsTotal.inc({ method, route, status_code: statusCode });
+    done();
+  });
+
   app.get("/api/v1/auth/bootstrap-status", async (request) => {
     const userCount = await db.user.count();
     const config = await db.appConfig.findUnique({
@@ -511,7 +565,7 @@ export async function buildServer() {
     return { token };
   });
 
-  app.post("/api/v1/auth/local/bootstrap-login", async (request) => {
+  app.post("/api/v1/auth/local/bootstrap-login", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request) => {
     if (!env.localBootstrapEnabled) {
       throw app.httpErrors.forbidden("Bootstrap admin is disabled");
     }
@@ -687,7 +741,7 @@ export async function buildServer() {
     return { token };
   });
 
-  app.post("/api/v1/auth/oidc/login", async () => {
+  app.post("/api/v1/auth/oidc/login", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async () => {
     const oidc = await resolveOidcRuntimeConfig();
     if (!oidc.oidcIssuerUrl || !oidc.oidcClientId || !oidc.oidcRedirectUri) {
       throw app.httpErrors.badRequest("OIDC configuration is incomplete");
@@ -1160,7 +1214,7 @@ export async function buildServer() {
     return { ok: true };
   });
 
-  app.post("/api/v1/auth/webauthn/authenticate/options", async (request) => {
+  app.post("/api/v1/auth/webauthn/authenticate/options", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (request) => {
     const body = request.body as { email?: string } | undefined;
 
     let challengeUserId: string | undefined;
@@ -1220,7 +1274,7 @@ export async function buildServer() {
     };
   });
 
-  app.post("/api/v1/auth/webauthn/authenticate/verify", async (request) => {
+  app.post("/api/v1/auth/webauthn/authenticate/verify", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request) => {
     const body = request.body as {
       challengeId?: string;
       response?: AuthenticationResponseJSON;
@@ -1346,7 +1400,7 @@ export async function buildServer() {
     };
   });
 
-  app.post("/api/v1/auth/mfa/totp/verify", async (request) => {
+  app.post("/api/v1/auth/mfa/totp/verify", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request) => {
     const userId = request.user?.id;
     if (!userId) {
       throw app.httpErrors.unauthorized("No active session");
@@ -1525,6 +1579,126 @@ export async function buildServer() {
   app.delete("/api/v1/credentials/:id", async (request) => {
     const params = request.params as { id: string };
     await db.credential.delete({ where: { id: params.id } });
+    return { ok: true };
+  });
+
+  // POST /api/v1/credentials/:id/rotate — trigger manual credential rotation
+  app.post("/api/v1/credentials/:id/rotate", async (request, reply) => {
+    const params = request.params as { id: string };
+    const body = request.body as { rotationIntervalDays?: number } | undefined;
+
+    const credential = await db.credential.findUnique({ where: { id: params.id } });
+    if (!credential) return reply.notFound("Credential not found");
+
+    if (credential.type !== "ssh_key") {
+      return reply.badRequest("Rotation is only supported for ssh_key credentials");
+    }
+
+    // Optionally update the rotation schedule at the same time
+    if (body && typeof body.rotationIntervalDays === "number") {
+      await db.credential.update({
+        where: { id: params.id },
+        data: {
+          rotationIntervalDays: body.rotationIntervalDays,
+          nextRotationAt: nextRotationDate(body.rotationIntervalDays)
+        }
+      });
+    }
+
+    const history = await enqueueCredentialRotation(db, queue, ENC_KEY, params.id, "manual");
+    return reply.code(202).send(history);
+  });
+
+  // GET /api/v1/credentials/:id/rotation-history — list rotation events
+  app.get("/api/v1/credentials/:id/rotation-history", async (request, reply) => {
+    const params = request.params as { id: string };
+    const query = request.query as { limit?: string; offset?: string };
+
+    const credential = await db.credential.findUnique({ where: { id: params.id } });
+    if (!credential) return reply.notFound("Credential not found");
+
+    const limit = Math.min(parseInt(query.limit ?? "50", 10) || 50, 200);
+    const offset = parseInt(query.offset ?? "0", 10) || 0;
+
+    const rows = await db.rotationHistory.findMany({
+      where: { credentialId: params.id },
+      orderBy: { startedAt: "desc" },
+      take: limit,
+      skip: offset
+    });
+
+    return rows;
+  });
+
+  // PATCH /api/v1/credentials/:id/rotation-schedule — configure automatic rotation
+  app.patch("/api/v1/credentials/:id/rotation-schedule", async (request, reply) => {
+    const params = request.params as { id: string };
+    const body = request.body as { rotationIntervalDays: number | null };
+
+    const credential = await db.credential.findUnique({ where: { id: params.id } });
+    if (!credential) return reply.notFound("Credential not found");
+
+    const intervalDays = body.rotationIntervalDays;
+    const updated = await db.credential.update({
+      where: { id: params.id },
+      data: {
+        rotationIntervalDays: intervalDays,
+        nextRotationAt: intervalDays != null ? nextRotationDate(intervalDays) : null
+      }
+    });
+
+    return {
+      id: updated.id,
+      rotationIntervalDays: updated.rotationIntervalDays,
+      nextRotationAt: updated.nextRotationAt
+    };
+  });
+
+  // POST /api/v1/internal/credentials/rotation/:rotationHistoryId/finalize
+  // Called by the worker to mark rotation complete and update credential
+  app.post("/api/v1/internal/credentials/rotation/:rotationHistoryId/finalize", async (request, reply) => {
+    const rawToken = (request.headers as Record<string, string>)["x-internal-token"];
+    if (!rawToken || rawToken !== env.INTERNAL_API_TOKEN) {
+      return reply.unauthorized("Invalid internal token");
+    }
+
+    const params = request.params as { rotationHistoryId: string };
+    const body = request.body as {
+      success: boolean;
+      encryptedNewPrivateKey?: string;
+      errorMessage?: string;
+    };
+
+    const history = await db.rotationHistory.findUnique({ where: { id: params.rotationHistoryId } });
+    if (!history) return reply.notFound("Rotation history not found");
+
+    if (body.success && body.encryptedNewPrivateKey) {
+      const cred = await db.credential.findUniqueOrThrow({ where: { id: history.credentialId } });
+      const newNextRotationAt = cred.rotationIntervalDays
+        ? nextRotationDate(cred.rotationIntervalDays)
+        : null;
+
+      await db.$transaction([
+        db.credential.update({
+          where: { id: history.credentialId },
+          data: {
+            encryptedValue: body.encryptedNewPrivateKey,
+            lastRotatedAt: new Date(),
+            ...(newNextRotationAt !== null ? { nextRotationAt: newNextRotationAt } : {})
+          }
+        }),
+        db.rotationHistory.update({
+          where: { id: history.id },
+          data: { status: "success", completedAt: new Date() }
+        })
+      ]);
+    } else {
+      await db.rotationHistory.update({
+        where: { id: history.id },
+        data: { status: "failed", completedAt: new Date(), errorMessage: body.errorMessage ?? "Unknown error" }
+      });
+    }
+
     return { ok: true };
   });
 
@@ -2073,7 +2247,11 @@ export async function buildServer() {
 
   app.post("/api/v1/alerts/:id/acknowledge", async (request) => {
     const params = request.params as { id: string };
-    const body = request.body as { notificationId: string };
+    const body = request.body as { notificationId?: string } | null;
+
+    if (!body?.notificationId) {
+      throw app.httpErrors.notFound("Notification not found");
+    }
 
     const notification = await db.notification.findFirst({
       where: {
@@ -2164,7 +2342,150 @@ export async function buildServer() {
       throw app.httpErrors.notFound("job not found");
     }
 
-    await evaluateAlertsForMetrics(db, body.metrics);
+    await evaluateAlertsForMetrics(db, body.metrics, queue);
+    return { ok: true };
+  });
+
+  // ---------------------------------------------------------------------------
+  // Notification channels
+  // ---------------------------------------------------------------------------
+
+  const smtpConfig: SmtpConfig = {
+    host: env.SMTP_HOST ?? "localhost",
+    port: env.SMTP_PORT,
+    user: env.SMTP_USER ?? null,
+    pass: env.SMTP_PASS ?? null,
+    from: env.SMTP_FROM
+  };
+
+  // Start queue worker for notification delivery
+  await queue.work<{ channelId: string; notificationId: string | null; message: string; attempt: number }>(
+    NOTIFICATION_DELIVERY_QUEUE,
+    async (jobs) => {
+      for (const job of jobs) {
+        await deliverNotification(db, job.data, smtpConfig);
+      }
+    }
+  );
+
+  app.get("/api/v1/notification-channels", async () => {
+    const channels = await db.notificationChannel.findMany({
+      include: {
+        deliveries: {
+          orderBy: { sentAt: "desc" },
+          take: 20
+        }
+      },
+      orderBy: { createdAt: "asc" }
+    });
+
+    return channels.map((channel) => {
+      const last = channel.deliveries[0] ?? null;
+      return {
+        id: channel.id,
+        name: channel.name,
+        type: channel.type,
+        target: channel.target,
+        enabled: channel.enabled,
+        createdAt: channel.createdAt,
+        lastDeliveryAt: last?.sentAt ?? null,
+        lastDeliveryStatus: last?.status ?? null,
+        recentDeliveries: channel.deliveries.map((d) => ({
+          id: d.id,
+          status: d.status,
+          message: d.message,
+          sentAt: d.sentAt
+        }))
+      };
+    });
+  });
+
+  app.post("/api/v1/notification-channels", async (request) => {
+    const body = request.body as {
+      name: string;
+      type: "email" | "webhook" | "slack";
+      target: string;
+      enabled?: boolean;
+    };
+
+    if (!body.name?.trim()) {
+      throw app.httpErrors.badRequest("name is required");
+    }
+    if (!body.type || !["email", "webhook", "slack"].includes(body.type)) {
+      throw app.httpErrors.badRequest("type must be email, webhook, or slack");
+    }
+    if (!body.target?.trim()) {
+      throw app.httpErrors.badRequest("target is required");
+    }
+
+    const webhookSecret = body.type === "webhook" ? generateWebhookSecret() : null;
+
+    const channel = await db.notificationChannel.create({
+      data: {
+        name: body.name.trim(),
+        type: body.type,
+        target: body.target.trim(),
+        enabled: body.enabled ?? true,
+        webhookSecret
+      }
+    });
+
+    const view = await toChannelView(db, channel.id);
+    return view;
+  });
+
+  app.patch("/api/v1/notification-channels/:id", async (request) => {
+    const params = request.params as { id: string };
+    const body = request.body as {
+      name?: string;
+      target?: string;
+      enabled?: boolean;
+    };
+
+    const existing = await db.notificationChannel.findUnique({ where: { id: params.id } });
+    if (!existing) {
+      throw app.httpErrors.notFound("Notification channel not found");
+    }
+
+    await db.notificationChannel.update({
+      where: { id: params.id },
+      data: {
+        name: body.name?.trim() ?? existing.name,
+        target: body.target?.trim() ?? existing.target,
+        enabled: body.enabled ?? existing.enabled
+      }
+    });
+
+    const view = await toChannelView(db, params.id);
+    return view;
+  });
+
+  app.delete("/api/v1/notification-channels/:id", async (request) => {
+    const params = request.params as { id: string };
+    const existing = await db.notificationChannel.findUnique({ where: { id: params.id } });
+    if (!existing) {
+      throw app.httpErrors.notFound("Notification channel not found");
+    }
+    await db.notificationChannel.delete({ where: { id: params.id } });
+    return { ok: true };
+  });
+
+  app.post("/api/v1/notification-channels/:id/test", async (request) => {
+    const params = request.params as { id: string };
+    const channel = await db.notificationChannel.findUnique({ where: { id: params.id } });
+    if (!channel) {
+      throw app.httpErrors.notFound("Notification channel not found");
+    }
+    if (!channel.enabled) {
+      throw app.httpErrors.badRequest("Channel is disabled");
+    }
+
+    await queue.send(NOTIFICATION_DELIVERY_QUEUE, {
+      channelId: channel.id,
+      notificationId: null,
+      message: "Test notification from Aviary",
+      attempt: 1
+    });
     return { ok: true };
   });
 
