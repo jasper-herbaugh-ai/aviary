@@ -146,6 +146,42 @@ certificatesResolvers:
 
 Staging certificates are not trusted by browsers but are structurally valid — use them to verify the full ACME flow before switching to production.
 
+## Observability (Prometheus + Grafana)
+
+Aviary exposes a Prometheus-compatible `/metrics` endpoint on the API server.
+
+### Metrics exposed
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `http_request_duration_seconds` | Histogram | `method`, `route`, `status_code` | HTTP request latency |
+| `http_requests_total` | Counter | `method`, `route`, `status_code` | Total HTTP requests |
+| `job_queue_depth` | Gauge | `queue`, `state` (`pending`/`active`) | pgBoss queue depth |
+
+Node.js default metrics (event loop lag, GC, heap, etc.) are also included courtesy of `prom-client`.
+
+### Local dev stack
+
+Start the full observability stack alongside the existing dev services:
+
+```bash
+docker compose \
+  -f docker/docker-compose.dev.yml \
+  -f docker/docker-compose.observability.yml \
+  up
+```
+
+- **Prometheus** — `http://localhost:9090`
+- **Grafana** — `http://localhost:3001` (login: `admin` / `admin`)
+
+The Grafana instance is pre-provisioned with the Aviary dashboard (`docs/grafana-dashboard.json`) wired to the Prometheus datasource. No manual import is required.
+
+To change the Grafana port set `GRAFANA_PORT` in your `.env` file.
+
+### Importing the dashboard manually
+
+If you are connecting to an existing Grafana instance, import `docs/grafana-dashboard.json` via **Dashboards → Import** and select your Prometheus datasource.
+
 ## PostgreSQL major upgrade reset
 
 If you previously ran an older PostgreSQL major version (for example 16/17) and switch to PostgreSQL 18, drop the old volume before starting Postgres:

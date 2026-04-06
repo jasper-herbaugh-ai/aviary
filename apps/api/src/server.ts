@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
+import {
+  httpRequestDuration,
+  httpRequestsTotal,
+  jobQueueDepth,
+  registry
+} from "./metrics.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
@@ -40,7 +46,7 @@ import { env } from "./env.js";
 import { decryptSecret, encryptSecret, getKey, sha256 } from "./crypto.js";
 import { signSessionToken, verifySessionToken } from "./auth.js";
 import { evaluateAlertsForMetrics } from "./alerts.js";
-import { createQueueClient, NOTIFICATION_DELIVERY_QUEUE, PLAYBOOK_QUEUE } from "./queue.js";
+import { createQueueClient, CREDENTIAL_ROTATION_QUEUE, NOTIFICATION_DELIVERY_QUEUE, PLAYBOOK_QUEUE } from "./queue.js";
 import { enqueueCredentialRotation, nextRotationDate } from "./credentials.js";
 import { startScheduler } from "./scheduler.js";
 import { buildTotpOtpauthUrl, generateTotpSecret, verifyTotpCode } from "./totp.js";
@@ -422,6 +428,38 @@ export async function buildServer() {
   }
 
   app.get("/health", async () => ({ ok: true }));
+
+  const TRACKED_QUEUES = [PLAYBOOK_QUEUE, CREDENTIAL_ROTATION_QUEUE, NOTIFICATION_DELIVERY_QUEUE];
+
+  // Prometheus metrics endpoint
+  app.get("/metrics", async (_request, reply) => {
+    // Refresh queue depth gauges before serving
+    try {
+      for (const name of TRACKED_QUEUES) {
+        const result = await queue.getQueue(name);
+        if (result) {
+          jobQueueDepth.set({ queue: name, state: "pending" }, result.queuedCount ?? 0);
+          jobQueueDepth.set({ queue: name, state: "active" }, result.activeCount ?? 0);
+        }
+      }
+    } catch {
+      // non-fatal — metrics still served with stale/zero values
+    }
+
+    const content = await registry.metrics();
+    return reply.header("Content-Type", registry.contentType).send(content);
+  });
+
+  // Track HTTP request duration and totals for all routes
+  app.addHook("onResponse", (request, reply, done) => {
+    const route = request.routeOptions?.url ?? "unknown";
+    const method = request.method;
+    const statusCode = String(reply.statusCode);
+    const durationSec = reply.elapsedTime / 1000;
+    httpRequestDuration.observe({ method, route, status_code: statusCode }, durationSec);
+    httpRequestsTotal.inc({ method, route, status_code: statusCode });
+    done();
+  });
 
   app.get("/api/v1/auth/bootstrap-status", async (request) => {
     const userCount = await db.user.count();
